@@ -1,0 +1,551 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dependency-free Feld-Hell / Hellschreiber Toy</title>
+  <style>
+    /* Everything lives in this one file: no npm, build step, CDN, or framework. */
+    :root {
+      color-scheme: light;
+      --bg: #f7f4ed;
+      --panel: #fffaf0;
+      --ink: #24211c;
+      --muted: #6b6256;
+      --line: #d9d0c2;
+      --accent: #8a4b08;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 16px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 1.5rem;
+    }
+
+    h1 {
+      margin: 0 0 0.25rem;
+      font-size: clamp(1.7rem, 4vw, 2.6rem);
+    }
+
+    p {
+      color: var(--muted);
+      margin-top: 0.25rem;
+    }
+
+    textarea, input, button {
+      font: inherit;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 7rem;
+      box-sizing: border-box;
+      border: 1px solid var(--line);
+      border-radius: 0.5rem;
+      padding: 0.75rem;
+      background: white;
+      resize: vertical;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 0.75rem;
+      padding: 1rem;
+      margin: 1rem 0;
+      box-shadow: 0 1px 0 rgba(0, 0, 0, 0.03);
+    }
+
+    .buttons, .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      align-items: end;
+    }
+
+    button {
+      border: 1px solid #9b7a50;
+      border-radius: 0.45rem;
+      padding: 0.55rem 0.85rem;
+      color: white;
+      background: var(--accent);
+      cursor: pointer;
+    }
+
+    button.secondary {
+      color: var(--ink);
+      background: #efe4d2;
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
+
+    label {
+      display: grid;
+      gap: 0.25rem;
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+
+    input[type="number"] {
+      width: 7rem;
+      border: 1px solid var(--line);
+      border-radius: 0.35rem;
+      padding: 0.35rem;
+      background: white;
+    }
+
+    input[type="range"] {
+      width: 10rem;
+    }
+
+    #canvasWrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 0.5rem;
+      background: white;
+      padding: 0.5rem;
+    }
+
+    canvas {
+      display: block;
+      /* Keep Hell dots blocky when the browser scales the canvas element. */
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: white;
+    }
+
+    pre {
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 0.5rem;
+      padding: 0.75rem;
+      background: #211b14;
+      color: #f5e8d1;
+      min-height: 3rem;
+      white-space: pre;
+    }
+
+    .status {
+      min-height: 1.4rem;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Feld-Hell / Hellschreiber Playground</h1>
+  <p>Type text, render it as a seven-row Hellschreiber strip, play it as keyed audio, save a WAV, or visually decode a loaded WAV. This is a small educational toy, not a robust radio modem.</p>
+
+  <section class="panel">
+    <label for="message">Message text</label>
+    <textarea id="message">CQ CQ HELLSCHREIBER 123</textarea>
+
+    <div class="buttons" style="margin-top: 1rem;">
+      <button id="renderBtn">Render</button>
+      <button id="playBtn">Play</button>
+      <button id="downloadBtn">Download WAV</button>
+      <button id="loadBtn" class="secondary">Load WAV</button>
+      <button id="decodeBtn" class="secondary" disabled>Decode/Render Loaded WAV</button>
+      <input id="wavInput" type="file" accept="audio/wav,audio/x-wav,.wav" hidden>
+    </div>
+  </section>
+
+  <section class="panel controls" aria-label="Hellschreiber controls">
+    <label>Tone Hz
+      <input id="toneHz" type="number" min="50" max="4000" step="1" value="1000">
+    </label>
+    <label>Dot rate
+      <input id="dotRate" type="number" min="1" max="1000" step="0.1" value="122.5">
+    </label>
+    <label>Sample rate
+      <input id="sampleRate" type="number" min="4000" max="48000" step="1" value="8000">
+    </label>
+    <label>Pixel scale
+      <input id="pixelScale" type="number" min="1" max="40" step="1" value="8">
+    </label>
+    <label>RX threshold <span id="thresholdValue">0.45</span>
+      <input id="threshold" type="range" min="0" max="1" step="0.01" value="0.45">
+    </label>
+    <label>RX contrast
+      <input id="contrast" type="number" min="0.2" max="20" step="0.1" value="3">
+    </label>
+  </section>
+
+  <section class="panel">
+    <div id="canvasWrap"><canvas id="stripCanvas" width="1" height="1"></canvas></div>
+    <p class="status" id="status"></p>
+  </section>
+
+  <section class="panel">
+    <label for="asciiPreview">ASCII preview</label>
+    <pre id="asciiPreview"></pre>
+  </section>
+</main>
+
+<script>
+'use strict';
+
+// Feld-Hell traditionally prints seven vertical dots per column.  The receiver
+// below deliberately stops at a visual strip; it does not attempt OCR.
+const ROWS = 7;
+const AMPLITUDE = 0.65;
+const CHAR_SPACING = 1;
+const WORD_SPACING = 3;
+
+// A readable 5x7 bitmap font.  '#' means ink/tone; spaces mean background/silence.
+const FONT = {
+  ' ': ['     ', '     ', '     ', '     ', '     ', '     ', '     '],
+  '!': ['  #  ', '  #  ', '  #  ', '  #  ', '  #  ', '     ', '  #  '],
+  '?': [' ### ', '#   #', '    #', '   # ', '  #  ', '     ', '  #  '],
+  '.': ['     ', '     ', '     ', '     ', '     ', '     ', '  #  '],
+  ',': ['     ', '     ', '     ', '     ', '     ', '  #  ', ' #   '],
+  '-': ['     ', '     ', '     ', ' ### ', '     ', '     ', '     '],
+  '/': ['    #', '    #', '   # ', '  #  ', ' #   ', '#    ', '#    '],
+  ':': ['     ', '  #  ', '     ', '     ', '     ', '  #  ', '     '],
+  '0': [' ### ', '#   #', '#  ##', '# # #', '##  #', '#   #', ' ### '],
+  '1': ['  #  ', ' ##  ', '# #  ', '  #  ', '  #  ', '  #  ', '#####'],
+  '2': [' ### ', '#   #', '    #', '   # ', '  #  ', ' #   ', '#####'],
+  '3': [' ### ', '#   #', '    #', '  ## ', '    #', '#   #', ' ### '],
+  '4': ['   # ', '  ## ', ' # # ', '#  # ', '#####', '   # ', '   # '],
+  '5': ['#####', '#    ', '#    ', '#### ', '    #', '#   #', ' ### '],
+  '6': [' ### ', '#   #', '#    ', '#### ', '#   #', '#   #', ' ### '],
+  '7': ['#####', '    #', '   # ', '  #  ', ' #   ', ' #   ', ' #   '],
+  '8': [' ### ', '#   #', '#   #', ' ### ', '#   #', '#   #', ' ### '],
+  '9': [' ### ', '#   #', '#   #', ' ####', '    #', '#   #', ' ### '],
+  'A': [' ### ', '#   #', '#   #', '#####', '#   #', '#   #', '#   #'],
+  'B': ['#### ', '#   #', '#   #', '#### ', '#   #', '#   #', '#### '],
+  'C': [' ### ', '#   #', '#    ', '#    ', '#    ', '#   #', ' ### '],
+  'D': ['#### ', '#   #', '#   #', '#   #', '#   #', '#   #', '#### '],
+  'E': ['#####', '#    ', '#    ', '#### ', '#    ', '#    ', '#####'],
+  'F': ['#####', '#    ', '#    ', '#### ', '#    ', '#    ', '#    '],
+  'G': [' ### ', '#   #', '#    ', '#  ##', '#   #', '#   #', ' ### '],
+  'H': ['#   #', '#   #', '#   #', '#####', '#   #', '#   #', '#   #'],
+  'I': ['#####', '  #  ', '  #  ', '  #  ', '  #  ', '  #  ', '#####'],
+  'J': ['#####', '    #', '    #', '    #', '    #', '#   #', ' ### '],
+  'K': ['#   #', '#  # ', '# #  ', '##   ', '# #  ', '#  # ', '#   #'],
+  'L': ['#    ', '#    ', '#    ', '#    ', '#    ', '#    ', '#####'],
+  'M': ['#   #', '## ##', '# # #', '# # #', '#   #', '#   #', '#   #'],
+  'N': ['#   #', '##  #', '##  #', '# # #', '#  ##', '#  ##', '#   #'],
+  'O': [' ### ', '#   #', '#   #', '#   #', '#   #', '#   #', ' ### '],
+  'P': ['#### ', '#   #', '#   #', '#### ', '#    ', '#    ', '#    '],
+  'Q': [' ### ', '#   #', '#   #', '#   #', '# # #', '#  # ', ' ## #'],
+  'R': ['#### ', '#   #', '#   #', '#### ', '# #  ', '#  # ', '#   #'],
+  'S': [' ####', '#    ', '#    ', ' ### ', '    #', '    #', '#### '],
+  'T': ['#####', '  #  ', '  #  ', '  #  ', '  #  ', '  #  ', '  #  '],
+  'U': ['#   #', '#   #', '#   #', '#   #', '#   #', '#   #', ' ### '],
+  'V': ['#   #', '#   #', '#   #', '#   #', '#   #', ' # # ', '  #  '],
+  'W': ['#   #', '#   #', '#   #', '# # #', '# # #', '## ##', '#   #'],
+  'X': ['#   #', '#   #', ' # # ', '  #  ', ' # # ', '#   #', '#   #'],
+  'Y': ['#   #', '#   #', ' # # ', '  #  ', '  #  ', '  #  ', '  #  '],
+  'Z': ['#####', '    #', '   # ', '  #  ', ' #   ', '#    ', '#####']
+};
+
+const els = {
+  message: document.getElementById('message'),
+  renderBtn: document.getElementById('renderBtn'),
+  playBtn: document.getElementById('playBtn'),
+  downloadBtn: document.getElementById('downloadBtn'),
+  loadBtn: document.getElementById('loadBtn'),
+  decodeBtn: document.getElementById('decodeBtn'),
+  wavInput: document.getElementById('wavInput'),
+  toneHz: document.getElementById('toneHz'),
+  dotRate: document.getElementById('dotRate'),
+  sampleRate: document.getElementById('sampleRate'),
+  pixelScale: document.getElementById('pixelScale'),
+  threshold: document.getElementById('threshold'),
+  thresholdValue: document.getElementById('thresholdValue'),
+  contrast: document.getElementById('contrast'),
+  canvas: document.getElementById('stripCanvas'),
+  ascii: document.getElementById('asciiPreview'),
+  status: document.getElementById('status')
+};
+
+let lastTxDots = [];
+let loadedWavBuffer = null;
+let loadedWavName = '';
+
+function numberFrom(input, fallback) {
+  const value = Number(input.value);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function readControls() {
+  return {
+    toneHz: numberFrom(els.toneHz, 1000),
+    dotRate: numberFrom(els.dotRate, 122.5),
+    sampleRate: Math.round(numberFrom(els.sampleRate, 8000)),
+    scale: Math.max(1, Math.round(numberFrom(els.pixelScale, 8))),
+    threshold: Number(els.threshold.value),
+    contrast: numberFrom(els.contrast, 3)
+  };
+}
+
+function samplesPerDot(sampleRate, dotRate) {
+  return Math.max(1, Math.round(sampleRate / dotRate));
+}
+
+function clamp(value, low, high) {
+  return Math.max(low, Math.min(high, value));
+}
+
+// Convert text to the actual Hell scan order: column by column, top to bottom.
+function textToDots(text) {
+  const dots = [];
+  for (const rawChar of text.toUpperCase()) {
+    const glyph = FONT[rawChar] || FONT[' '];
+    const width = glyph[0].length;
+    for (let col = 0; col < width; col += 1) {
+      for (let row = 0; row < ROWS; row += 1) {
+        dots.push(glyph[row][col] === ' ' ? 0 : 1);
+      }
+    }
+    const spacing = rawChar === ' ' ? WORD_SPACING : CHAR_SPACING;
+    for (let i = 0; i < spacing * ROWS; i += 1) dots.push(0);
+  }
+  return dots;
+}
+
+function dotsToRows(values) {
+  const width = Math.floor(values.length / ROWS);
+  const rows = Array.from({ length: ROWS }, () => new Array(width).fill(0));
+  for (let i = 0; i < width * ROWS; i += 1) {
+    rows[i % ROWS][Math.floor(i / ROWS)] = values[i];
+  }
+  return rows;
+}
+
+function renderStrip(values, grayscale) {
+  const controls = readControls();
+  const rows = dotsToRows(values);
+  const width = Math.max(1, rows[0] ? rows[0].length : 1);
+  const height = ROWS;
+  const canvas = els.canvas;
+  const ctx = canvas.getContext('2d');
+
+  canvas.width = width * controls.scale;
+  canvas.height = height * controls.scale;
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = 'white';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  for (let row = 0; row < height; row += 1) {
+    for (let col = 0; col < width; col += 1) {
+      const ink = clamp(rows[row][col] || 0, 0, 1);
+      if (ink <= 0) continue;
+      const shade = grayscale ? Math.round(255 * (1 - ink)) : 0;
+      ctx.fillStyle = `rgb(${shade}, ${shade}, ${shade})`;
+      ctx.fillRect(col * controls.scale, row * controls.scale, controls.scale, controls.scale);
+    }
+  }
+
+  els.ascii.textContent = rowsToAscii(rows, grayscale);
+}
+
+function rowsToAscii(rows, grayscale) {
+  if (!rows.length || !rows[0].length) return '(no dots)';
+  const shades = grayscale ? ' .:-=+*#%@' : ' #';
+  return rows.map(row => row.map(value => {
+    const index = Math.round(clamp(value, 0, 1) * (shades.length - 1));
+    return shades[index];
+  }).join('').replace(/\s+$/u, '')).join('\n');
+}
+
+// Make keyed sine audio.  Each black dot becomes one short tone window, and
+// a tiny envelope at the edges reduces clicks without changing the toy's shape.
+function dotsToSamples(dots, sampleRate, dotRate, toneHz) {
+  const perDot = samplesPerDot(sampleRate, dotRate);
+  const samples = new Float32Array(dots.length * perDot);
+  const step = 2 * Math.PI * toneHz / sampleRate;
+  const fade = Math.min(Math.max(1, Math.floor(perDot / 6)), 12);
+  let phase = 0;
+  let out = 0;
+
+  for (const dot of dots) {
+    for (let i = 0; i < perDot; i += 1) {
+      if (dot) {
+        let envelope = 1;
+        if (i < fade) envelope = i / fade;
+        else if (i >= perDot - fade) envelope = (perDot - i - 1) / fade;
+        samples[out] = Math.sin(phase) * AMPLITUDE * envelope;
+        phase += step;
+        if (phase > 2 * Math.PI) phase -= 2 * Math.PI;
+      }
+      out += 1;
+    }
+  }
+  return samples;
+}
+
+function ensureTxDots() {
+  lastTxDots = textToDots(els.message.value);
+  renderStrip(lastTxDots, false);
+  els.status.textContent = `Rendered ${Math.floor(lastTxDots.length / ROWS)} columns from ${els.message.value.length} characters.`;
+  return lastTxDots;
+}
+
+function getAudioContext() {
+  const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextCtor) throw new Error('This browser does not provide AudioContext.');
+  return new AudioContextCtor();
+}
+
+async function playCurrent() {
+  const dots = ensureTxDots();
+  const controls = readControls();
+  const samples = dotsToSamples(dots, controls.sampleRate, controls.dotRate, controls.toneHz);
+  const audioContext = getAudioContext();
+  const buffer = audioContext.createBuffer(1, samples.length, controls.sampleRate);
+  buffer.copyToChannel(samples, 0);
+  const source = audioContext.createBufferSource();
+  source.buffer = buffer;
+  source.connect(audioContext.destination);
+  source.start();
+  els.status.textContent = `Playing ${(samples.length / controls.sampleRate).toFixed(2)} seconds at ${controls.sampleRate} Hz.`;
+}
+
+// Manual RIFF/WAVE writer for mono signed 16-bit PCM.
+function samplesToWavBlob(samples, sampleRate) {
+  const bytesPerSample = 2;
+  const dataBytes = samples.length * bytesPerSample;
+  const buffer = new ArrayBuffer(44 + dataBytes);
+  const view = new DataView(buffer);
+
+  writeAscii(view, 0, 'RIFF');
+  view.setUint32(4, 36 + dataBytes, true);
+  writeAscii(view, 8, 'WAVE');
+  writeAscii(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);       // PCM fmt chunk size
+  view.setUint16(20, 1, true);        // format 1 = PCM
+  view.setUint16(22, 1, true);        // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * bytesPerSample, true);
+  view.setUint16(32, bytesPerSample, true);
+  view.setUint16(34, 16, true);
+  writeAscii(view, 36, 'data');
+  view.setUint32(40, dataBytes, true);
+
+  let offset = 44;
+  for (const sample of samples) {
+    const value = clamp(sample, -1, 1);
+    view.setInt16(offset, value < 0 ? value * 32768 : value * 32767, true);
+    offset += 2;
+  }
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+function writeAscii(view, offset, text) {
+  for (let i = 0; i < text.length; i += 1) view.setUint8(offset + i, text.charCodeAt(i));
+}
+
+function downloadWav() {
+  const dots = ensureTxDots();
+  const controls = readControls();
+  const samples = dotsToSamples(dots, controls.sampleRate, controls.dotRate, controls.toneHz);
+  const blob = samplesToWavBlob(samples, controls.sampleRate);
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'hellschreiber.wav';
+  link.click();
+  URL.revokeObjectURL(url);
+  els.status.textContent = `Downloaded ${samples.length} samples as mono 16-bit PCM WAV.`;
+}
+
+async function loadWavFile(file) {
+  loadedWavName = file.name;
+  loadedWavBuffer = await file.arrayBuffer();
+  els.decodeBtn.disabled = false;
+  els.status.textContent = `Loaded ${file.name}. Click Decode/Render Loaded WAV.`;
+}
+
+async function decodeLoadedWav() {
+  if (!loadedWavBuffer) return;
+  const audioContext = getAudioContext();
+  // decodeAudioData may detach its input, so pass a fresh copy each time.
+  const decoded = await audioContext.decodeAudioData(loadedWavBuffer.slice(0));
+  const mono = downmixToMono(decoded);
+  const controls = readControls();
+  const brightness = samplesToBrightness(mono, decoded.sampleRate, controls.dotRate, controls.toneHz);
+  const viewed = applyRxView(brightness, controls.threshold, controls.contrast);
+  renderStrip(viewed, true);
+  els.status.textContent = `Decoded ${loadedWavName || 'WAV'}: ${decoded.sampleRate} Hz, ${decoded.numberOfChannels} channel(s), ${Math.floor(viewed.length / ROWS)} columns.`;
+}
+
+function downmixToMono(audioBuffer) {
+  const mono = new Float32Array(audioBuffer.length);
+  for (let channel = 0; channel < audioBuffer.numberOfChannels; channel += 1) {
+    const data = audioBuffer.getChannelData(channel);
+    for (let i = 0; i < data.length; i += 1) mono[i] += data[i] / audioBuffer.numberOfChannels;
+  }
+  return mono;
+}
+
+// Goertzel is a tiny single-frequency detector: ideal for asking "how much
+// 1000 Hz tone energy is inside this one dot window?"
+function goertzelEnergy(samples, start, count, sampleRate, toneHz) {
+  const omega = 2 * Math.PI * toneHz / sampleRate;
+  const coeff = 2 * Math.cos(omega);
+  let prev = 0;
+  let prev2 = 0;
+  for (let i = 0; i < count; i += 1) {
+    const current = samples[start + i] + coeff * prev - prev2;
+    prev2 = prev;
+    prev = current;
+  }
+  return (prev2 * prev2 + prev * prev - coeff * prev * prev2) / (count * count);
+}
+
+function samplesToBrightness(samples, sampleRate, dotRate, toneHz) {
+  const perDot = samplesPerDot(sampleRate, dotRate);
+  const energies = [];
+  for (let start = 0; start + perDot <= samples.length; start += perDot) {
+    energies.push(goertzelEnergy(samples, start, perDot, sampleRate, toneHz));
+  }
+  if (!energies.length) return [];
+
+  const sorted = energies.slice().sort((a, b) => a - b);
+  const floor = sorted[Math.floor(sorted.length * 0.10)] || 0;
+  const peak = sorted[sorted.length - 1] || 1;
+  const span = Math.max(peak - floor, Number.EPSILON);
+
+  // Sqrt compression keeps weak received dots visible in grayscale.
+  return energies.map(energy => Math.sqrt(clamp((energy - floor) / span, 0, 1)));
+}
+
+function applyRxView(brightness, threshold, contrast) {
+  return brightness.map(value => clamp((value - threshold) * contrast + 0.5, 0, 1));
+}
+
+els.renderBtn.addEventListener('click', ensureTxDots);
+els.playBtn.addEventListener('click', () => playCurrent().catch(showError));
+els.downloadBtn.addEventListener('click', downloadWav);
+els.loadBtn.addEventListener('click', () => els.wavInput.click());
+els.decodeBtn.addEventListener('click', () => decodeLoadedWav().catch(showError));
+els.wavInput.addEventListener('change', event => {
+  const file = event.target.files && event.target.files[0];
+  if (file) loadWavFile(file).catch(showError);
+});
+els.threshold.addEventListener('input', () => {
+  els.thresholdValue.textContent = Number(els.threshold.value).toFixed(2);
+});
+
+function showError(error) {
+  console.error(error);
+  els.status.textContent = `Error: ${error.message || error}`;
+}
+
+// Initial render so the page is useful immediately after opening index.html.
+ensureTxDots();
+</script>
+</body>
+</html>
