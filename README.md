@@ -3,10 +3,11 @@
 
 # Vanilla Python and JavaScript Hellschreiber Toys
 
-This repository contains two dependency-free Feld-Hell / Hellschreiber experiments:
+This repository contains three dependency-free Feld-Hell / Hellschreiber experiments:
 
 - `hellschreiber.py` is a command-line Python toy that can transmit text to a WAV file and receive a WAV file into a visual strip.
 - `index.html` is a browser-only single-page playground with its CSS and JavaScript embedded in the same file. Try it at https://thesepeoplearenotyourfriends.github.io/vanilla-hellschreiber/
+- `hell-android-apk/` is a vanilla Android app project named HellScribe for touch-first speaker transmit and microphone receive.
 
 Both versions are intentionally small, readable, and educational. They are not intended to be robust radio modems, automatic OCR tools, or production DSP implementations.
 
@@ -61,6 +62,22 @@ The play command calls `aplay` if it is installed. You can also open the generat
 
 ```sh
 python3 hellschreiber.py fontdemo "HELLO 123"
+```
+
+## Android APK version
+
+The `hell-android-apk/` directory contains HellScribe, a small Android app project using only the Android framework. It keeps the same 5x7 Hellschreiber rendering idea and default tone settings, but favors phone workflows over files:
+
+- Large touch-friendly Render, Play speaker, Listen mic, and Stop controls.
+- Speaker transmit using Android `AudioTrack`.
+- Microphone visual receive using Android `AudioRecord` and a Goertzel tone detector.
+- System-aware light/dark colors so the UI is not forced bright white on dark-mode devices.
+- Android SDK 34 target settings, a no-Gradle project layout, and no third-party runtime dependencies.
+
+Build it with the repository maintainer's no-Gradle shell script by passing the Android project directory:
+
+```sh
+/path/to/your/build-apk.sh hell-android-apk
 ```
 
 ## Browser JavaScript version
