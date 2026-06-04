@@ -1,4 +1,4 @@
-package com.helloworld;
+package com.hellscribe;
 
 import android.Manifest;
 import android.app.Activity;
@@ -28,7 +28,7 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 
-public class MainActivity extends Activity {
+public class MainActivity extends Activity implements View.OnClickListener {
     private static final int ROWS = 7;
     private static final int SAMPLE_RATE = 8000;
     private static final double AMPLITUDE = 0.65;
@@ -55,8 +55,10 @@ public class MainActivity extends Activity {
     private TextView status;
     private TextView asciiPreview;
     private HellStripView stripView;
+    private Button renderButton;
     private Button playButton;
     private Button listenButton;
+    private Button stopButton;
 
     private volatile boolean playing;
     private volatile boolean listening;
@@ -137,31 +139,19 @@ public class MainActivity extends Activity {
         LinearLayout buttonRow2 = row();
         messagePanel.addView(buttonRow1);
         messagePanel.addView(buttonRow2);
-        Button renderButton = primaryButton("Render");
+        renderButton = primaryButton("Render");
         playButton = primaryButton("Play speaker");
         listenButton = secondaryButton("Listen mic");
-        Button stopButton = secondaryButton("Stop");
+        stopButton = secondaryButton("Stop");
         buttonRow1.addView(renderButton, weightedButton());
         buttonRow1.addView(playButton, weightedButton());
         buttonRow2.addView(listenButton, weightedButton());
         buttonRow2.addView(stopButton, weightedButton());
 
-        renderButton.setOnClickListener(new View.OnClickListener() {
-            public void onClick(View view) { renderMessage(); }
-        });
-        playButton.setOnClickListener(new View.OnClickListener() {
-            public void onClick(View view) { startPlayback(); }
-        });
-        listenButton.setOnClickListener(new View.OnClickListener() {
-            public void onClick(View view) { toggleListening(); }
-        });
-        stopButton.setOnClickListener(new View.OnClickListener() {
-            public void onClick(View view) {
-                stopPlayback();
-                stopListening();
-                setStatus("Stopped.");
-            }
-        });
+        renderButton.setOnClickListener(this);
+        playButton.setOnClickListener(this);
+        listenButton.setOnClickListener(this);
+        stopButton.setOnClickListener(this);
 
         LinearLayout controls = panel();
         root.addView(controls);
@@ -201,6 +191,21 @@ public class MainActivity extends Activity {
         setContentView(scroll);
     }
 
+    @Override
+    public void onClick(View view) {
+        if (view == renderButton) {
+            renderMessage();
+        } else if (view == playButton) {
+            startPlayback();
+        } else if (view == listenButton) {
+            toggleListening();
+        } else if (view == stopButton) {
+            stopPlayback();
+            stopListening();
+            setStatus("Stopped.");
+        }
+    }
+
     private void renderMessage() {
         ArrayList<boolean[]> columns = textToColumns(messageInput.getText().toString());
         stripView.setScale(readInt(scaleInput, 9));
@@ -221,9 +226,7 @@ public class MainActivity extends Activity {
         final double dotRate = Math.max(1.0, readDouble(dotRateInput, 122.5));
         playing = true;
         playButton.setText("Stop play");
-        playbackThread = new Thread(new Runnable() {
-            public void run() { playColumns(columns, toneHz, dotRate); }
-        }, "hell-playback");
+        playbackThread = new PlaybackThread(this, columns, toneHz, dotRate);
         playbackThread.start();
     }
 
@@ -250,7 +253,7 @@ public class MainActivity extends Activity {
                 }
             }
         }
-        final String[] finalStatus = {"Playback finished."};
+        String finalStatus = "Playback finished.";
         try {
             int minBuffer = AudioTrack.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
             audioTrack = new AudioTrack(AudioManager.STREAM_MUSIC, SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO,
@@ -264,16 +267,10 @@ public class MainActivity extends Activity {
                 written += result;
             }
         } catch (IllegalStateException ex) {
-            finalStatus[0] = "Speaker playback could not start on this device.";
+            finalStatus = "Speaker playback could not start on this device.";
         } finally {
             releaseTrack();
-            runOnUiThread(new Runnable() {
-                public void run() {
-                    playing = false;
-                    playButton.setText("Play speaker");
-                    setStatus(finalStatus[0]);
-                }
-            });
+            runOnUiThread(new PlaybackFinishedUpdate(this, finalStatus));
         }
     }
 
@@ -311,9 +308,7 @@ public class MainActivity extends Activity {
         final double contrast = Math.max(0.1, readDouble(contrastInput, 3.0));
         listening = true;
         listenButton.setText("Stop mic");
-        receiveThread = new Thread(new Runnable() {
-            public void run() { receiveMicrophone(toneHz, dotRate, contrast); }
-        }, "hell-receive");
+        receiveThread = new ReceiveThread(this, toneHz, dotRate, contrast);
         receiveThread.start();
     }
 
@@ -353,12 +348,7 @@ public class MainActivity extends Activity {
             setStatus("Microphone receive could not start on this device.");
         } finally {
             releaseRecord();
-            runOnUiThread(new Runnable() {
-                public void run() {
-                    listening = false;
-                    listenButton.setText("Listen mic");
-                }
-            });
+            runOnUiThread(new ReceiveFinishedUpdate(this));
         }
     }
 
@@ -533,10 +523,91 @@ public class MainActivity extends Activity {
         catch (Exception ignored) { return fallback; }
     }
 
-    private void setStatus(final String value) {
-        runOnUiThread(new Runnable() {
-            public void run() { status.setText(value); }
-        });
+    private void setStatus(String value) {
+        runOnUiThread(new StatusUpdate(this, value));
+    }
+
+    private static final class PlaybackThread extends Thread {
+        private final MainActivity activity;
+        private final ArrayList<boolean[]> columns;
+        private final double toneHz;
+        private final double dotRate;
+
+        PlaybackThread(MainActivity activity, ArrayList<boolean[]> columns, double toneHz, double dotRate) {
+            super("hell-playback");
+            this.activity = activity;
+            this.columns = columns;
+            this.toneHz = toneHz;
+            this.dotRate = dotRate;
+        }
+
+        @Override
+        public void run() {
+            activity.playColumns(columns, toneHz, dotRate);
+        }
+    }
+
+    private static final class ReceiveThread extends Thread {
+        private final MainActivity activity;
+        private final double toneHz;
+        private final double dotRate;
+        private final double contrast;
+
+        ReceiveThread(MainActivity activity, double toneHz, double dotRate, double contrast) {
+            super("hell-receive");
+            this.activity = activity;
+            this.toneHz = toneHz;
+            this.dotRate = dotRate;
+            this.contrast = contrast;
+        }
+
+        @Override
+        public void run() {
+            activity.receiveMicrophone(toneHz, dotRate, contrast);
+        }
+    }
+
+    private static final class PlaybackFinishedUpdate implements Runnable {
+        private final MainActivity activity;
+        private final String message;
+
+        PlaybackFinishedUpdate(MainActivity activity, String message) {
+            this.activity = activity;
+            this.message = message;
+        }
+
+        public void run() {
+            activity.playing = false;
+            activity.playButton.setText("Play speaker");
+            activity.status.setText(message);
+        }
+    }
+
+    private static final class ReceiveFinishedUpdate implements Runnable {
+        private final MainActivity activity;
+
+        ReceiveFinishedUpdate(MainActivity activity) {
+            this.activity = activity;
+        }
+
+        public void run() {
+            activity.listening = false;
+            activity.listenButton.setText("Listen mic");
+        }
+    }
+
+    private static final class StatusUpdate implements Runnable {
+        private final MainActivity activity;
+        private final String value;
+
+        StatusUpdate(MainActivity activity, String value) {
+            this.activity = activity;
+            this.value = value;
+        }
+
+        public void run() {
+            activity.status.setText(value);
+        }
     }
 
     private int dp(int value) {
@@ -651,17 +722,27 @@ public class MainActivity extends Activity {
             invalidate();
         }
 
-        void appendEnergy(final float[] column) {
-            post(new Runnable() {
-                public void run() {
-                    synchronized (energyColumns) {
-                        energyColumns.add(column);
-                        if (energyColumns.size() > 1200) energyColumns.remove(0);
-                    }
-                    requestLayout();
-                    invalidate();
+        void appendEnergy(float[] column) {
+            post(new AppendEnergyUpdate(this, column));
+        }
+
+        private static final class AppendEnergyUpdate implements Runnable {
+            private final HellStripView stripView;
+            private final float[] column;
+
+            AppendEnergyUpdate(HellStripView stripView, float[] column) {
+                this.stripView = stripView;
+                this.column = column;
+            }
+
+            public void run() {
+                synchronized (stripView.energyColumns) {
+                    stripView.energyColumns.add(column);
+                    if (stripView.energyColumns.size() > 1200) stripView.energyColumns.remove(0);
                 }
-            });
+                stripView.requestLayout();
+                stripView.invalidate();
+            }
         }
 
         @Override
