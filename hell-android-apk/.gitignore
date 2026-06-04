@@ -1,0 +1,5 @@
+build/
+key.keystore
+*.apk
+*.aab
+*.idsig
