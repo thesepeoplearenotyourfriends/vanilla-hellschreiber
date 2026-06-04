@@ -70,6 +70,7 @@ The `hell-android-apk/` directory contains HellScribe, a small Android app proje
 
 - Large touch-friendly Render, Play speaker, Listen mic, and Stop controls.
 - Speaker transmit using Android `AudioTrack`.
+  - Playback debug progress: the Android transmitter now builds one PCM buffer for the entire rendered message, streams it through a single `MODE_STREAM` `AudioTrack`, and waits for the playback head to drain the queued samples before stopping/releasing the track.
 - Microphone visual receive using Android `AudioRecord` and a Goertzel tone detector.
 - System-aware light/dark colors so the UI is not forced bright white on dark-mode devices.
 - Android SDK 34 target settings, a no-Gradle project layout, and no third-party runtime dependencies.
