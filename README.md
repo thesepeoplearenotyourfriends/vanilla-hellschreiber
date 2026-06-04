@@ -6,7 +6,7 @@
 This repository contains two dependency-free Feld-Hell / Hellschreiber experiments:
 
 - `hellschreiber.py` is a command-line Python toy that can transmit text to a WAV file and receive a WAV file into a visual strip.
-- `index.html` is a browser-only single-page playground with its CSS and JavaScript embedded in the same file. Try it at https://thesepeoplearenotyourfriends.github.io/vanilla-py-hellschreiber/
+- `index.html` is a browser-only single-page playground with its CSS and JavaScript embedded in the same file. Try it at https://thesepeoplearenotyourfriends.github.io/vanilla-hellschreiber/
 
 Both versions are intentionally small, readable, and educational. They are not intended to be robust radio modems, automatic OCR tools, or production DSP implementations.
 
