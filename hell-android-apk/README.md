@@ -16,7 +16,7 @@ This directory is laid out for the Termux-friendly shell build script shown by t
 - `AndroidManifest.xml`
 - `res/`
 - `assets/`
-- `src/com/helloworld/MainActivity.java`
+- `src/com/hellscribe/MainActivity.java`
 
 From the parent repository, pass this directory as the project argument to that script:
 
