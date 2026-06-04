@@ -256,18 +256,30 @@ public class MainActivity extends Activity implements View.OnClickListener {
         String finalStatus = "Playback finished.";
         try {
             int minBuffer = AudioTrack.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
-            audioTrack = new AudioTrack(AudioManager.STREAM_MUSIC, SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT, Math.max(minBuffer, pcm.length * 2), AudioTrack.MODE_STREAM);
-            audioTrack.play();
+            int streamBufferBytes = Math.max(minBuffer, dotSamples * ROWS * 2);
+            AudioTrack track = new AudioTrack(AudioManager.STREAM_MUSIC, SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT, streamBufferBytes, AudioTrack.MODE_STREAM);
+            audioTrack = track;
+            track.play();
             setStatus("Playing Hell tone over the speaker.");
             int written = 0;
+            int chunkSamples = Math.max(1, streamBufferBytes / 2);
             while (playing && written < pcm.length) {
-                int result = audioTrack.write(pcm, written, Math.min(1024, pcm.length - written));
+                int result = track.write(pcm, written, Math.min(chunkSamples, pcm.length - written));
                 if (result <= 0) break;
                 written += result;
             }
+            while (playing && audioTrack == track && track.getPlaybackHeadPosition() < written) {
+                Thread.sleep(20);
+            }
+            if (!playing || written < pcm.length) {
+                finalStatus = "Playback stopped.";
+            }
+        } catch (InterruptedException ex) {
+            finalStatus = "Playback stopped.";
+            Thread.currentThread().interrupt();
         } catch (IllegalStateException ex) {
-            finalStatus = "Speaker playback could not start on this device.";
+            finalStatus = playing ? "Speaker playback could not start on this device." : "Playback stopped.";
         } finally {
             releaseTrack();
             runOnUiThread(new PlaybackFinishedUpdate(this, finalStatus));
