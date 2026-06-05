@@ -22,6 +22,7 @@
       --weak: #e5bc62;
       --bad: #d47878;
       --waiting: #7f91a6;
+      --menu: #0c1724;
     }
 
     * { box-sizing: border-box; }
@@ -40,6 +41,7 @@
     }
 
     header, section {
+      position: relative;
       background: color-mix(in srgb, var(--panel) 94%, transparent);
       border: 1px solid var(--line);
       border-radius: 16px;
@@ -49,6 +51,38 @@
     }
 
     h1, h2, h3, p { margin-top: 0; }
+
+    .panel-close {
+      position: absolute;
+      right: 0.75rem;
+      top: 0.75rem;
+      min-width: 2.1rem;
+      padding: 0.3rem 0.55rem;
+    }
+
+    .panel-menu {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: color-mix(in srgb, var(--menu) 96%, transparent);
+      border-bottom: 1px solid var(--line);
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
+      margin: 0 0 1rem;
+      padding: 0.65rem 1rem;
+    }
+
+    .panel-menu summary {
+      cursor: pointer;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      list-style: none;
+      text-transform: uppercase;
+    }
+
+    .panel-menu summary::-webkit-details-marker { display: none; }
+    .panel-menu summary::before { content: '☰ '; color: var(--accent-strong); }
+    #closedPanels { margin-top: 0.65rem; }
+    #closedPanels:empty::after { content: 'No closed areas'; color: var(--muted); }
     h1 { font-size: clamp(1.8rem, 4vw, 2.7rem); margin-bottom: 0.2rem; }
     h2 { font-size: 0.95rem; letter-spacing: 0.09em; text-transform: uppercase; color: var(--accent-strong); }
     h3 { font-size: 1rem; margin-bottom: 0.35rem; }
@@ -183,13 +217,17 @@
 </head>
 <body>
 <main>
-  <header>
+  <details class="panel-menu">
+    <summary>Areas</summary>
+    <div class="row" id="closedPanels"></div>
+  </details>
+  <header data-panel-title="Intro">
     <h1>Ultrasonic Playground</h1>
     <p>Browser speaker/mic tone lab and sync tester. One quiet frequency trace makes nearly silent high-frequency activity visible.</p>
     <p class="hint"><a href="index.html">Back to Hellschreiber toy</a></p>
   </header>
 
-  <section aria-labelledby="txTitle">
+  <section aria-labelledby="txTitle" data-panel-title="Transmit">
     <h2 id="txTitle">Transmit</h2>
     <div class="tone-row" id="toneButtons"></div>
     <div class="control-row">
@@ -217,7 +255,7 @@
     </div>
   </section>
 
-  <section aria-labelledby="rxTitle">
+  <section aria-labelledby="rxTitle" data-panel-title="Receive">
     <h2 id="rxTitle">Receive</h2>
     <div class="row">
       <button id="listen" class="primary">Start Listening</button>
@@ -257,20 +295,20 @@
   </section>
 
   <div class="grid">
-    <section aria-labelledby="syncTitle">
+    <section aria-labelledby="syncTitle" data-panel-title="Sync / Test Results">
       <h2 id="syncTitle">Sync / Test Results</h2>
       <p class="hint">Workflow: start listening, press Sync RX, wait for sync, then press Sync TX on the other device. RX waits for the preamble before scoring, so simultaneous taps are not required.</p>
       <div class="results" id="results"></div>
       <p id="recommendation">Recommended profile: waiting for sync data.</p>
     </section>
 
-    <section aria-labelledby="logTitle">
+    <section aria-labelledby="logTitle" data-panel-title="Decoded / Log">
       <h2 id="logTitle">Decoded / Log</h2>
       <div class="log" id="log"></div>
     </section>
   </div>
 
-  <section class="packet-panel" aria-labelledby="packetTitle">
+  <section class="packet-panel" aria-labelledby="packetTitle" data-panel-title="Experimental Packet FSK">
     <h2 id="packetTitle">Experimental Packet FSK</h2>
     <p class="hint">Two-tone FSK: mark = bit 1, space = bit 0. Packet format: alternating preamble, sync byte, length byte, payload, checksum.</p>
     <div class="control-row">
@@ -301,6 +339,7 @@
       <button id="startPacketLoop">Start Loop</button>
       <button id="stopPacketLoop">Stop Loop</button>
       <button id="packetRx">Receive Packet</button>
+      <button id="packetSelfTest">Packet self-test</button>
     </div>
     <div class="packet-output" id="packetOut">Packet RX idle.</div>
   </section>
@@ -319,13 +358,14 @@ const MIN_FREQ = 14000;
 const MAX_FREQ = 20000;
 const HISTORY_MS = 90000;
 const TRACE_WINDOW_MS = 30000;
-const DETECT_INTERVAL_MS = 70;
+const DETECT_INTERVAL_MS = 50;
 const STRONG_ENERGY = 0.018;
 const FADE_MS = 18;
 const SYNC_GAP_MS = 90;
 const EDGE_IGNORE_MS = 50;
+const SYMBOL_GUARD_FRACTION = 0.24;
 const SYNC_PREAMBLE_SYMBOL_MS = 100;
-const SYNC_PREAMBLE_BITS = [1, 0, 1, 0, 1, 0, 1, 0];
+const SYNC_PREAMBLE_BITS = Array.from({ length: 12 }, (_, index) => index % 2 ? 0 : 1);
 const PACKET_SYNC_BYTE = 0xa7;
 const PACKET_PREAMBLE_BITS = Array.from({ length: 16 }, (_, index) => index % 2 ? 0 : 1);
 const TX_STATES = {
@@ -375,6 +415,8 @@ const els = {
   startPacketLoop: document.getElementById('startPacketLoop'),
   stopPacketLoop: document.getElementById('stopPacketLoop'),
   packetRx: document.getElementById('packetRx'),
+  packetSelfTest: document.getElementById('packetSelfTest'),
+  closedPanels: document.getElementById('closedPanels'),
   packetOut: document.getElementById('packetOut'),
   results: document.getElementById('results'),
   recommendation: document.getElementById('recommendation'),
@@ -411,6 +453,7 @@ let packetRxAttempt = 0;
 let packetSeenUntil = 0;
 let packetLog = [];
 let packetFreqTouched = false;
+let packetRxProgressLast = 0;
 
 function getSelectedSymbolMs() {
   return Number(els.symbolLength.value);
@@ -444,15 +487,23 @@ function getSyncSequence() {
 }
 
 function getSyncTxSequence() {
+  const warmup = {
+    category: 'warmup',
+    name: 'unscored 1s receiver warmup carrier',
+    tones: [16000],
+    duration: 1000,
+    gap: 0,
+    afterGap: SYNC_GAP_MS
+  };
   const preamble = {
     category: 'preamble',
-    name: 'sync preamble 10101010',
+    name: 'sync preamble 101010101010',
     tones: SYNC_PREAMBLE_BITS.map(bit => bit ? 18000 : 16000),
     duration: SYNC_PREAMBLE_SYMBOL_MS,
     gap: 0,
     afterGap: SYNC_GAP_MS
   };
-  return [preamble, ...getSyncSequence()];
+  return [warmup, preamble, ...getSyncSequence()];
 }
 
 function ensureAudioContext() {
@@ -517,6 +568,39 @@ function buildControls() {
     bin.innerHTML = `<span>${freq / 1000}k</span><div class="bar-track"><div class="bar-fill" id="bin-${freq}"></div></div>`;
     els.activityBars.append(bin);
   }
+}
+
+
+function setupCloseablePanels() {
+  const panels = [...document.querySelectorAll('main > header, main > section, .grid > section')];
+  panels.forEach((panel, index) => {
+    const title = panel.dataset.panelTitle || panel.querySelector('h1, h2')?.textContent?.trim() || `Area ${index + 1}`;
+    panel.dataset.panelTitle = title;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'panel-close';
+    button.textContent = 'X';
+    button.title = `Close ${title}`;
+    button.setAttribute('aria-label', `Close ${title}`);
+    button.addEventListener('click', () => closePanel(panel));
+    panel.append(button);
+  });
+}
+
+function closePanel(panel) {
+  const title = panel.dataset.panelTitle || 'Closed area';
+  panel.hidden = true;
+  const restore = document.createElement('button');
+  restore.type = 'button';
+  restore.textContent = `☰ ${title}`;
+  restore.dataset.panelTitle = title;
+  restore.addEventListener('click', () => {
+    panel.hidden = false;
+    if (panel.parentElement?.classList?.contains('grid')) panel.parentElement.append(panel);
+    else document.querySelector('main').append(panel);
+    restore.remove();
+  });
+  els.closedPanels.append(restore);
 }
 
 function updateSliderLabels() {
@@ -889,9 +973,14 @@ Verdict: ${result.status}
 Reason: ${syncRxState === 'waiting for sync' ? 'RX is listening for the alternating sync preamble.' : 'No evidence scored yet.'}`;
 }
 
+function symbolGuardMs(symbolMs) {
+  return Math.min(Math.max(EDGE_IGNORE_MS, symbolMs * SYMBOL_GUARD_FRACTION), symbolMs * 0.42);
+}
+
 function scoreWindow(expectedFreq, start, end) {
-  const stableStart = start + EDGE_IGNORE_MS;
-  const stableEnd = end - EDGE_IGNORE_MS;
+  const guard = symbolGuardMs(end - start);
+  const stableStart = start + guard;
+  const stableEnd = end - guard;
   const expectedWindows = Math.max(1, Math.round((stableEnd - stableStart) / DETECT_INTERVAL_MS));
   const samples = traceBuffer.filter(s => s.timestamp >= stableStart && s.timestamp <= stableEnd);
   const signalSamples = samples.filter(s => s.frequency);
@@ -1027,11 +1116,15 @@ function bitsToByte(bits) {
   return bits.reduce((value, bit) => (value << 1) | (bit ? 1 : 0), 0);
 }
 
-function buildPacketBits() {
-  const payload = textToBytes(els.packetText.value || 'HELLO WORLD');
+function buildPacketBytes(text = els.packetText.value || 'HELLO WORLD') {
+  const payload = textToBytes(text);
   const checksum = payload.reduce((sum, byte) => (sum + byte) & 0xff, 0);
-  const bytes = [PACKET_SYNC_BYTE, payload.length, ...payload, checksum];
-  return [...PACKET_PREAMBLE_BITS, ...bytes.flatMap(byteToBits)];
+  return { payload, checksum, bytes: [PACKET_SYNC_BYTE, payload.length, ...payload, checksum] };
+}
+
+function buildPacketBits(text) {
+  const packet = buildPacketBytes(text);
+  return [...PACKET_PREAMBLE_BITS, ...packet.bytes.flatMap(byteToBits)];
 }
 
 
@@ -1053,7 +1146,10 @@ async function sendPacketOnce() {
   const space = Number(els.packetSpace.value);
   const symbolMs = Number(els.packetSymbol.value);
   const bits = buildPacketBits();
-  const sequence = [{ name: `packet ${bits.length} bits`, tones: bits.map(bit => bit ? mark : space), duration: symbolMs, gap: 0 }];
+  const sequence = [
+    { name: 'packet unscored 1s warmup carrier', tones: [space], duration: 1000, gap: 0, afterGap: Math.max(100, symbolMs) },
+    { name: `packet ${bits.length} bits`, tones: bits.map(bit => bit ? mark : space), duration: symbolMs, gap: 0, afterGap: 0 }
+  ];
   log('OK', `packet TX ${bits.length} bits, mark ${formatFreq(mark)}, space ${formatFreq(space)}, ${symbolMs} ms symbols`);
   await playSequence(sequence, TX_STATES.PATTERN, 'packet TX');
 }
@@ -1075,96 +1171,226 @@ function setPacketOut(text) {
   els.packetOut.textContent = text;
 }
 
-function decodePacketFrom(startTime) {
+function classifySymbolWindow(start, end, mark, space) {
+  const samples = traceBuffer.filter(s => s.timestamp >= start && s.timestamp <= end);
+  if (!samples.length) return { bit: null, confidence: 0, markAvg: 0, spaceAvg: 0, samples: 0, missing: true };
+  const markAvg = samples.reduce((sum, sample) => sum + Math.min(1, ((sample.meta?.energyMap?.[mark]) || 0) / STRONG_ENERGY), 0) / samples.length;
+  const spaceAvg = samples.reduce((sum, sample) => sum + Math.min(1, ((sample.meta?.energyMap?.[space]) || 0) / STRONG_ENERGY), 0) / samples.length;
+  const confidence = Math.abs(markAvg - spaceAvg) / Math.max(0.01, markAvg + spaceAvg);
+  return { bit: markAvg >= spaceAvg ? 1 : 0, confidence, markAvg, spaceAvg, samples, missing: false };
+}
+
+function decodePacketBits(bits, options = {}) {
+  const preambleBits = options.preambleBits ?? PACKET_PREAMBLE_BITS.length;
+  const uncertain = options.uncertain ?? [];
+  const missing = options.missing ?? [];
+  const confidences = options.confidences ?? [];
+  const groupedBits = bits.map((bit, index) => {
+    const position = index + 1;
+    if (missing.includes(position)) return '·';
+    if (uncertain.includes(position)) return '?';
+    return String(bit);
+  }).join('').replace(/(.{8})/g, '$1 ').trim();
+  const preambleSlice = bits.slice(0, preambleBits);
+  const preambleMatches = preambleSlice.filter((bit, index) => bit === PACKET_PREAMBLE_BITS[index]).length;
+  const preambleFound = preambleSlice.length >= preambleBits && preambleMatches >= Math.ceil(preambleBits * 0.75);
+  const syncStart = preambleBits;
+  const lengthStart = syncStart + 8;
+  const payloadStart = lengthStart + 8;
+  const syncBitsCollected = Math.max(0, Math.min(8, bits.length - syncStart));
+  const lengthBitsCollected = Math.max(0, Math.min(8, bits.length - lengthStart));
+  const syncByte = syncBitsCollected === 8 ? bitsToByte(bits.slice(syncStart, syncStart + 8)) : null;
+  const length = lengthBitsCollected === 8 ? bitsToByte(bits.slice(lengthStart, lengthStart + 8)) : null;
+  const payloadBitsExpected = length === null ? 0 : length * 8;
+  const checksumStart = payloadStart + payloadBitsExpected;
+  const expectedBits = length === null ? payloadStart : checksumStart + 8;
+  const payloadBitsCollected = length === null ? 0 : Math.max(0, Math.min(payloadBitsExpected, bits.length - payloadStart));
+  const checksumBitsCollected = length === null ? 0 : Math.max(0, Math.min(8, bits.length - checksumStart));
+  const payloadBytes = [];
+  if (length !== null) {
+    const completePayloadBits = bits.slice(payloadStart, payloadStart + payloadBitsCollected - (payloadBitsCollected % 8));
+    for (let i = 0; i < completePayloadBits.length; i += 8) payloadBytes.push(bitsToByte(completePayloadBits.slice(i, i + 8)));
+  }
+  const checksum = checksumBitsCollected === 8 ? bitsToByte(bits.slice(checksumStart, checksumStart + 8)) : null;
+  const expectedChecksum = payloadBytes.length === (length ?? -1) ? payloadBytes.reduce((sum, byte) => (sum + byte) & 0xff, 0) : null;
+  const syncStatus = syncBitsCollected < 8 ? 'missing' : syncByte === PACKET_SYNC_BYTE ? 'found' : `wrong value 0x${syncByte.toString(16).padStart(2, '0')}`;
+  const checksumStatus = checksumBitsCollected < 8 ? 'NOT READY' : checksum === expectedChecksum ? 'OK' : 'BAD';
+  const coverage = bits.length / Math.max(1, expectedBits);
+  const byteAlignment = bits.length < syncStart + 8 ? 'unknown' : syncByte === PACKET_SYNC_BYTE ? 'OK' : 'shifted / unknown';
+  let finalResult = 'PARTIAL';
+  let reason = 'collecting packet fields';
+  if (!preambleFound) { finalResult = bits.length ? 'PARTIAL' : 'NO LOCK'; reason = 'preamble missing or below match threshold'; }
+  else if (syncBitsCollected < 8) { reason = 'sync marker byte is missing'; }
+  else if (syncByte !== PACKET_SYNC_BYTE) { finalResult = 'BAD'; reason = `sync marker wrong: expected 0x${PACKET_SYNC_BYTE.toString(16)}, received 0x${syncByte.toString(16).padStart(2, '0')}`; }
+  else if (lengthBitsCollected < 8) { reason = 'length byte is missing'; }
+  else if (payloadBitsCollected < payloadBitsExpected) { reason = `missing ${payloadBitsExpected - payloadBitsCollected} payload bit(s)`; }
+  else if (checksumBitsCollected < 8) { reason = `missing ${8 - checksumBitsCollected} checksum bit(s)`; }
+  else if (checksum !== expectedChecksum) { finalResult = 'BAD'; reason = `checksum bad: received 0x${checksum.toString(16).padStart(2, '0')}, computed 0x${expectedChecksum.toString(16).padStart(2, '0')}`; }
+  else { finalResult = 'OK'; reason = uncertain.some(position => position <= expectedBits) ? 'packet decoded and checksum matched; review uncertain symbol positions' : 'packet decoded and checksum matched'; }
+  const text = (finalResult === 'OK' || payloadBytes.length) ? new TextDecoder().decode(new Uint8Array(payloadBytes)).replace(/[^\x20-\x7E]/g, '?') : '';
+  return {
+    bits, groupedBits, preambleFound, preambleMatches, preambleBits, syncStatus, syncByte,
+    length, payloadBytes, checksum, expectedChecksum, checksumStatus, finalResult, reason,
+    expectedBits, collectedBits: bits.length, payloadBitsExpected, payloadBitsCollected,
+    checksumBitsExpected: 8, checksumBitsCollected, syncBitsExpected: 8, syncBitsCollected,
+    lengthBitsExpected: 8, lengthBitsCollected, byteAlignment, coverage,
+    confidence: average(confidences), uncertain, missing, text,
+    complete: bits.length >= expectedBits && checksumBitsCollected === 8,
+    checksumOk: checksumStatus === 'OK' && finalResult === 'OK'
+  };
+}
+
+function decodePacketFrom(startTime, now = performance.now()) {
   const mark = Number(els.packetMark.value);
   const space = Number(els.packetSpace.value);
   const symbolMs = Number(els.packetSymbol.value);
-  const maxBits = 16 + 16 + (255 + 1) * 8;
+  const preambleBits = PACKET_PREAMBLE_BITS.length;
+  const maxBits = preambleBits + 16 + (255 + 1) * 8;
   const bits = [];
   const uncertain = [];
+  const missing = [];
   const confidences = [];
   for (let index = 0; index < maxBits; index++) {
-    const start = startTime + index * symbolMs + EDGE_IGNORE_MS;
-    const end = startTime + (index + 1) * symbolMs - EDGE_IGNORE_MS;
-    if (performance.now() < end) break;
-    const samples = traceBuffer.filter(s => s.timestamp >= start && s.timestamp <= end);
-    if (!samples.length) break;
-    const markAvg = samples.reduce((sum, s) => sum + Math.min(1, ((s.meta?.energyMap?.[mark]) || 0) / STRONG_ENERGY), 0) / samples.length;
-    const spaceAvg = samples.reduce((sum, s) => sum + Math.min(1, ((s.meta?.energyMap?.[space]) || 0) / STRONG_ENERGY), 0) / samples.length;
-    const confidence = Math.abs(markAvg - spaceAvg) / Math.max(0.01, markAvg + spaceAvg);
-    bits.push(markAvg >= spaceAvg ? 1 : 0);
-    confidences.push(confidence);
-    if (confidence < 0.18 || Math.max(markAvg, spaceAvg) < 0.10) uncertain.push(index + 1);
-    if (bits.length >= 32) {
-      const payloadLength = bitsToByte(bits.slice(24, 32));
-      const needed = 16 + 16 + payloadLength * 8 + 8;
+    const guard = symbolGuardMs(symbolMs);
+    const start = startTime + index * symbolMs + guard;
+    const end = startTime + (index + 1) * symbolMs - guard;
+    if (now < end) break;
+    const classified = classifySymbolWindow(start, end, mark, space);
+    const position = index + 1;
+    if (classified.missing) { missing.push(position); break; }
+    bits.push(classified.bit);
+    confidences.push(classified.confidence);
+    if (classified.confidence < 0.18 || Math.max(classified.markAvg, classified.spaceAvg) < 0.10) uncertain.push(position);
+    if (bits.length >= preambleBits + 16) {
+      const payloadLength = bitsToByte(bits.slice(preambleBits + 8, preambleBits + 16));
+      const needed = preambleBits + 16 + payloadLength * 8 + 8;
       if (bits.length >= needed) break;
     }
   }
-  const groupedBits = bits.map((bit, index) => uncertain.includes(index + 1) ? '?' : String(bit)).join('').replace(/(.{8})/g, '$1 ').trim();
-  if (bits.length < 32) return { complete: false, groupedBits, uncertain, text: '', checksumOk: false, confidence: average(confidences) };
-  const syncByte = bitsToByte(bits.slice(16, 24));
-  const length = bitsToByte(bits.slice(24, 32));
-  const neededBits = 16 + 16 + length * 8 + 8;
-  if (bits.length < neededBits) return { complete: false, groupedBits, uncertain, text: '', checksumOk: false, confidence: average(confidences), length };
-  const payloadBits = bits.slice(32, 32 + length * 8);
-  const payload = [];
-  for (let i = 0; i < payloadBits.length; i += 8) payload.push(bitsToByte(payloadBits.slice(i, i + 8)));
-  const checksum = bitsToByte(bits.slice(32 + length * 8, 40 + length * 8));
-  const expectedChecksum = payload.reduce((sum, byte) => (sum + byte) & 0xff, 0);
-  const text = new TextDecoder().decode(new Uint8Array(payload)).replace(/[^\x20-\x7E]/g, '?');
-  return { complete: true, groupedBits, uncertain, text, checksumOk: checksum === expectedChecksum && syncByte === PACKET_SYNC_BYTE, confidence: average(confidences), length, syncByte };
+  return decodePacketBits(bits, { preambleBits, uncertain, missing, confidences });
+}
+
+function formatPacketDiagnostic(decoded, label = 'Packet attempt') {
+  const expectedPayloadBytes = decoded.length ?? 'missing';
+  return `${label}
+Preamble: ${decoded.preambleFound ? 'found' : decoded.collectedBits ? 'partial' : 'missing'} (${decoded.preambleMatches}/${decoded.preambleBits} alternating symbols matched)
+Sync marker: ${decoded.syncStatus}
+Symbol coverage: ${decoded.collectedBits} / ${decoded.expectedBits} bits (${percent(decoded.coverage)})
+Symbol decision confidence: ${percent(decoded.confidence)}
+Missed symbols: ${decoded.missing.length}${decoded.missing.length ? ` at ${decoded.missing.join(', ')}` : ''}
+Uncertain symbols: ${decoded.uncertain.length}${decoded.uncertain.length ? ` at ${decoded.uncertain.join(', ')}` : ''}
+Byte alignment: ${decoded.byteAlignment}
+Length byte: ${decoded.length === null ? 'missing' : decoded.length}
+Payload bytes: ${decoded.payloadBytes.length} / ${expectedPayloadBytes}
+Checksum byte: ${decoded.checksum === null ? 'missing' : `0x${decoded.checksum.toString(16).padStart(2, '0')}`}
+Checksum/CRC: ${decoded.checksumStatus}${decoded.expectedChecksum === null ? '' : ` (computed 0x${decoded.expectedChecksum.toString(16).padStart(2, '0')})`}
+Final result: ${decoded.finalResult}
+Reason: ${decoded.reason}
+Bits: ${decoded.groupedBits || '(collecting)'}
+Decoded string: ${decoded.finalResult === 'OK' ? decoded.text : decoded.text ? `Best guess: ${decoded.text}` : '(not decoded)'}
+Diagnostics: expected total ${decoded.expectedBits}, collected total ${decoded.collectedBits}, preamble ${decoded.preambleBits}, sync ${decoded.syncBitsCollected}/${decoded.syncBitsExpected}, length ${decoded.lengthBitsCollected}/${decoded.lengthBitsExpected}, payload ${decoded.payloadBitsCollected}/${decoded.payloadBitsExpected}, checksum ${decoded.checksumBitsCollected}/${decoded.checksumBitsExpected}`;
 }
 
 function average(values) {
   return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
 }
 
-function findPacketPreamble(now) {
+function packetPreambleProgress(now) {
   const symbolMs = Number(els.packetSymbol.value);
   const mark = Number(els.packetMark.value);
   const space = Number(els.packetSpace.value);
-  const lookbackStart = now - Math.max(6000, symbolMs * 30);
+  const lookbackStart = now - Math.max(9000, symbolMs * 34 + 1200);
   const first = traceBuffer.find(s => s.timestamp >= lookbackStart)?.timestamp;
-  if (!first) return null;
+  const fallback = {
+    start: null, matches: 0, needed: Math.ceil(PACKET_PREAMBLE_BITS.length * 0.75),
+    averageConfidence: 0, carrierConfidence: 0, currentPeak, currentStrength,
+    state: 'listening', reason: 'no recent detector samples in packet lookback window'
+  };
+  if (!first) return fallback;
+  let best = { ...fallback, reason: 'alternating preamble not matched yet' };
   for (let start = first; start <= now - PACKET_PREAMBLE_BITS.length * symbolMs; start += symbolMs / 2) {
     let matches = 0;
     let confidenceSum = 0;
+    const warmupStart = Math.max(lookbackStart, start - 1200);
+    const warmupSamples = traceBuffer.filter(s => s.timestamp >= warmupStart && s.timestamp < start);
+    const carrierConfidence = warmupSamples.length
+      ? warmupSamples.reduce((sum, sample) => sum + Math.min(1, ((sample.meta?.energyMap?.[space]) || 0) / STRONG_ENERGY), 0) / warmupSamples.length
+      : 0;
     for (let i = 0; i < PACKET_PREAMBLE_BITS.length; i++) {
-      const samples = traceBuffer.filter(s => s.timestamp >= start + i * symbolMs + EDGE_IGNORE_MS && s.timestamp <= start + (i + 1) * symbolMs - EDGE_IGNORE_MS);
-      if (!samples.length) continue;
-      const markAvg = samples.reduce((sum, s) => sum + Math.min(1, ((s.meta?.energyMap?.[mark]) || 0) / STRONG_ENERGY), 0) / samples.length;
-      const spaceAvg = samples.reduce((sum, s) => sum + Math.min(1, ((s.meta?.energyMap?.[space]) || 0) / STRONG_ENERGY), 0) / samples.length;
-      const bit = markAvg >= spaceAvg ? 1 : 0;
-      const confidence = Math.abs(markAvg - spaceAvg);
-      if (bit === PACKET_PREAMBLE_BITS[i] && confidence > 0.06) matches++;
-      confidenceSum += confidence;
+      const guard = symbolGuardMs(symbolMs);
+      const classified = classifySymbolWindow(start + i * symbolMs + guard, start + (i + 1) * symbolMs - guard, mark, space);
+      if (classified.missing) continue;
+      if (classified.bit === PACKET_PREAMBLE_BITS[i] && classified.confidence > 0.06) matches++;
+      confidenceSum += classified.confidence;
     }
-    if (matches >= 12 && confidenceSum / PACKET_PREAMBLE_BITS.length > 0.08) return start;
+    const averageConfidence = confidenceSum / PACKET_PREAMBLE_BITS.length;
+    if (matches > best.matches || (matches === best.matches && averageConfidence + carrierConfidence > best.averageConfidence + best.carrierConfidence)) {
+      best = {
+        start, matches, needed: fallback.needed, averageConfidence, carrierConfidence,
+        currentPeak, currentStrength,
+        state: carrierConfidence > 0.18 ? 'carrier seen' : matches ? 'alternating pattern partially matched' : 'waiting for preamble',
+        reason: matches >= fallback.needed && averageConfidence > 0.08 ? 'preamble detected' : `need ${fallback.needed} alternating matches and >8% confidence`
+      };
+    }
+    if (matches >= fallback.needed && averageConfidence > 0.08) return { ...best, state: 'preamble detected', reason: 'timing locked' };
   }
-  return null;
+  return best;
+}
+
+function findPacketPreamble(now) {
+  const progress = packetPreambleProgress(now);
+  return progress.state === 'preamble detected' ? progress.start : null;
+}
+
+function updatePacketWaiting(now) {
+  if (now - packetRxProgressLast < 500) return;
+  packetRxProgressLast = now;
+  const mark = Number(els.packetMark.value);
+  const space = Number(els.packetSpace.value);
+  const progress = packetPreambleProgress(now);
+  setPacketOut(`Packet RX armed
+RX state: ${isListening ? 'listening' : 'not listening'} → ${progress.state}
+Expected preamble frequencies: mark ${formatFreq(mark)}, space ${formatFreq(space)}
+Current detected peak: ${formatFreq(progress.currentPeak)}
+Carrier confidence: ${percent(progress.carrierConfidence)}
+Alternating pattern progress: ${progress.matches}/${PACKET_PREAMBLE_BITS.length} symbols matched (need ${progress.needed})
+Preamble confidence: ${percent(progress.averageConfidence)}
+Why not locked: ${progress.reason}
+Raw trace and activity remain live while waiting.`);
 }
 
 function scanPackets(now) {
   if (now < packetSeenUntil) return;
   const start = findPacketPreamble(now);
-  if (!start) return;
-  const decoded = decodePacketFrom(start);
-  if (!decoded.complete && decoded.groupedBits.length < 12) return;
+  if (!start) { updatePacketWaiting(now); return; }
+  const decoded = decodePacketFrom(start, now);
+  if (!decoded.complete && decoded.collectedBits < PACKET_PREAMBLE_BITS.length + 4) { updatePacketWaiting(now); return; }
   packetRxAttempt += 1;
-  packetSeenUntil = now + Number(els.packetSymbol.value) * 12;
-  const status = decoded.complete ? (decoded.checksumOk ? 'OK' : 'BAD') : 'PARTIAL';
-  const text = `Packet attempt ${String(packetRxAttempt).padStart(3, '0')}
-Preamble: detected
-Bits: ${decoded.groupedBits || '(collecting)'}
-Text: ${decoded.checksumOk ? decoded.text : decoded.text ? `Best guess: ${decoded.text}` : '(not decoded)'}
-Checksum: ${decoded.complete ? decoded.checksumOk ? 'OK' : 'BAD' : 'partial'}
-Confidence: ${percent(decoded.confidence)}${decoded.uncertain.length ? `
-Uncertain bits: ${decoded.uncertain.join(', ')}` : ''}`;
+  packetSeenUntil = now + Number(els.packetSymbol.value) * 8;
+  const status = decoded.finalResult;
+  const text = formatPacketDiagnostic(decoded, `Packet attempt ${String(packetRxAttempt).padStart(3, '0')}`);
   packetLog.unshift(text);
   packetLog = packetLog.slice(0, 5);
   setPacketOut(packetLog.join('\n\n'));
-  log(status === 'OK' ? 'OK' : status === 'BAD' ? 'BAD' : 'WARN', `packet RX ${status.toLowerCase()}`);
+  log(status === 'OK' ? 'OK' : status === 'BAD' ? 'BAD' : status === 'NO LOCK' ? 'WARN' : 'WARN', `packet RX ${status.toLowerCase()}: ${decoded.reason}`);
+}
+
+function runPacketSelfTest() {
+  const clean = buildPacketBits('HI');
+  const cases = [
+    ['clean bitstream', clean, 'OK'],
+    ['flipped bit', clean.map((bit, index) => index === PACKET_PREAMBLE_BITS.length + 16 ? bit ^ 1 : bit), 'BAD'],
+    ['missing one bit', clean.filter((_, index) => index !== PACKET_PREAMBLE_BITS.length + 12), 'PARTIAL/BAD'],
+    ['truncated checksum byte', clean.slice(0, -8), 'PARTIAL'],
+    ['shifted by one bit', clean.slice(1), 'PARTIAL/BAD']
+  ];
+  const lines = cases.map(([name, bits, expected]) => {
+    const decoded = decodePacketBits(bits, { confidences: bits.map(() => 1) });
+    const pass = expected.includes(decoded.finalResult) || (expected === 'PARTIAL/BAD' && ['PARTIAL', 'BAD'].includes(decoded.finalResult));
+    return `${pass ? 'PASS' : 'FAIL'} ${name}: expected ${expected}, got ${decoded.finalResult} — ${decoded.reason}`;
+  });
+  setPacketOut(`Packet self-test (no audio)\n${lines.join('\n')}`);
+  log(lines.every(line => line.startsWith('PASS')) ? 'OK' : 'BAD', 'packet no-audio self-test complete');
 }
 
 function animationLoop() {
@@ -1221,6 +1447,7 @@ function attachEvents() {
     stopTx();
     log('OK', 'packet loop stopped');
   });
+  els.packetSelfTest.addEventListener('click', runPacketSelfTest);
   els.packetRx.addEventListener('click', async () => {
     if (!isListening) {
       try { await startListening(); }
@@ -1230,7 +1457,7 @@ function attachEvents() {
     packetRxActive = !packetRxActive;
     els.packetRx.classList.toggle('active', packetRxActive);
     els.packetRx.textContent = packetRxActive ? 'Packet RX On' : 'Receive Packet';
-    setPacketOut(packetRxActive ? 'Packet RX armed; waiting for alternating preamble.' : 'Packet RX idle.');
+    setPacketOut(packetRxActive ? 'Packet RX armed; waiting for preamble progress. Trace/activity continue updating.' : 'Packet RX idle.');
     log(packetRxActive ? 'OK' : 'WARN', packetRxActive ? 'packet receiver armed' : 'packet receiver stopped');
   });
   els.liveBtn.addEventListener('click', () => { liveMode = true; viewOffsetMs = 0; });
@@ -1250,6 +1477,7 @@ function attachEvents() {
 }
 
 buildControls();
+setupCloseablePanels();
 updateSliderLabels();
 renderResults();
 attachEvents();
