@@ -568,7 +568,6 @@ let packetLogSession = 0;
 let packetVisibleLogSession = 0;
 const PACKET_LOG_LIMIT = 500;
 const PACKET_VISIBLE_LIMIT = 20;
-const PACKET_EXPORT_CHAR_LIMIT = 18000;
 const PACKET_BODY_OFFSET_CANDIDATES_MS = [0, 25, 50, 75, 100, 125, 150, 175, 200, 225, 250, 300];
 let packetFreqTouched = false;
 let packetRxProgressLast = 0;
@@ -2543,41 +2542,26 @@ function byteLength(text) {
   return new TextEncoder().encode(text).length;
 }
 
-function makeDiagnosisDigest(records) {
-  const countsByKind = {};
-  const countsByResult = {};
-  for (const record of records) {
-    const kind = record.kind || 'unknown';
-    const result = record.finalResult || record.state || record.reason || 'unknown';
-    countsByKind[kind] = (countsByKind[kind] || 0) + 1;
-    countsByResult[result] = (countsByResult[result] || 0) + 1;
-  }
-  const newestValueRecord = [...records].sort((a, b) => packetExportRecordValue(b) - packetExportRecordValue(a))[0] || null;
-  return {
-    retainedRecords: records.length,
-    byKind: countsByKind,
-    byResult: countsByResult,
-    markerWaitRecords: records.filter(isRepeatedMarkerWaitRecord).length,
-    latestRecordAt: records[0]?.timestamp ?? null,
-    assembledText: microframeRx.lastAssembledText || '',
-    assemblyStatus: microframeRx.lastStateLine || '',
-    finalCrcOk: microframeRx.finalCrcOk,
-    highestValueRecord: newestValueRecord ? {
-      timestamp: newestValueRecord.timestamp ?? null,
-      kind: newestValueRecord.kind ?? null,
-      finalResult: newestValueRecord.finalResult ?? null,
-      frameType: newestValueRecord.frameType ?? null,
-      seq: newestValueRecord.seq ?? null,
-      dataText: newestValueRecord.dataText ?? null,
-      reason: newestValueRecord.reason ?? newestValueRecord.acceptRejectReason ?? null
-    } : null
-  };
+function setPacketExportStatus(message, tone = 'ready') {
+  const prefix = tone === 'error' ? 'export error' : tone === 'copied' ? 'copied' : 'export ready';
+  els.packetExportStatus.textContent = `${prefix}: ${message}`;
 }
 
-function makePacketExportPayload(records, { humanReadable = '', truncation = null, diagnosisRecords = records } = {}) {
+function clearExportPacketLogs() {
+  packetLog = [];
+  renderPacketLog();
+  els.packetExportJson.value = '';
+  els.packetExportJson.hidden = true;
+  els.packetCopyJson.disabled = true;
+  setPacketExportStatus('retained export records cleared; current visible session remains active');
+  log('WARN', 'retained microframe export log cleared by user');
+}
+
+function exportPacketLogs() {
+  const humanReadable = els.packetOut.textContent;
   const currentVisibleRecords = packetLog.filter(record => record.session === packetVisibleLogSession && !record.exportOnly);
-  const payload = {
-    diagnosisDigest: makeDiagnosisDigest(diagnosisRecords),
+  const records = packetLog.map(packetRecordForExport);
+  const exportPayload = {
     exportedAt: new Date().toISOString(),
     currentVisibleRecordCount: currentVisibleRecords.length,
     retainedExportRecordCount: packetLog.length,
@@ -2597,180 +2581,20 @@ function makePacketExportPayload(records, { humanReadable = '', truncation = nul
       status: microframeRx.lastStateLine,
       finalCrcOk: microframeRx.finalCrcOk,
       meta: microframeRx.meta
-    }
+    },
+    humanReadable,
+    records
   };
-  if (truncation) Object.assign(payload, truncation);
-  if (humanReadable) payload.humanReadable = humanReadable;
-  payload.records = records;
-  return payload;
-}
-
-function isRepeatedMarkerWaitRecord(record) {
-  return record.kind === 'marker_acquisition_diagnostics' && !record.accepted && !record.decoded;
-}
-
-function packetExportRecordValue(record) {
-  let value = 0;
-  if (!record.exportOnly) value += 20;
-  if (record.finalResult === 'OK') value += 60;
-  else if (record.finalResult === 'PARTIAL') value += 20;
-  else if (record.finalResult === 'BAD') value += 10;
-  if (record.frameType === 'meta' || record.kind === 'marker_decode_diagnostics') value += 25;
-  if (record.dataText) value += 20;
-  if (record.finalCrcOk) value += 20;
-  if (isRepeatedMarkerWaitRecord(record)) value -= 50;
-  return value;
-}
-
-function packetExportTimestampValue(record) {
-  const parsed = Date.parse(record.timestamp || '');
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function sortPacketExportRecordsForTruncation(records) {
-  return [...records].sort((a, b) => {
-    const waitDelta = Number(isRepeatedMarkerWaitRecord(a)) - Number(isRepeatedMarkerWaitRecord(b));
-    if (waitDelta) return waitDelta;
-    return (packetExportRecordValue(b) - packetExportRecordValue(a)) || (packetExportTimestampValue(b) - packetExportTimestampValue(a));
-  });
-}
-
-const PACKET_EXPORT_VERBOSE_FIELDS = new Set([
-  'decoded',
-  'markerDecodeDiagnostics',
-  'offsetCandidates',
-  'candidateRuns',
-  'missingSampleCandidates',
-  'symbols',
-  'rawBits',
-  'decodedFrameBodyBits',
-  'assembledTextState',
-  'assemblyStatus',
-  'lookbackStart',
-  'now'
-]);
-
-function compactPacketExportRecord(record, omitted) {
-  const compact = {};
-  for (const [key, value] of Object.entries(record)) {
-    if (PACKET_EXPORT_VERBOSE_FIELDS.has(key)) {
-      omitted.count += 1;
-      omitted.names.add(key);
-      continue;
-    }
-    compact[key] = value;
-  }
-  if (Array.isArray(compact.uncertainSymbols) && compact.uncertainSymbols.length > 12) {
-    compact.uncertainSymbolCount = compact.uncertainSymbols.length;
-    compact.uncertainSymbols = compact.uncertainSymbols.slice(0, 12);
-    omitted.count += 1;
-    omitted.names.add('uncertainSymbolsTail');
-  }
-  if (Array.isArray(compact.missedSymbols) && compact.missedSymbols.length > 12) {
-    compact.missedSymbolCount = compact.missedSymbols.length;
-    compact.missedSymbols = compact.missedSymbols.slice(0, 12);
-    omitted.count += 1;
-    omitted.names.add('missedSymbolsTail');
-  }
-  return compact;
-}
-
-function buildCappedPacketExportText(fullRecords, humanReadable) {
-  const fullPayload = makePacketExportPayload(fullRecords, { humanReadable });
-  const fullText = JSON.stringify(fullPayload);
-  const originalCharCount = fullText.length;
-  if (originalCharCount <= PACKET_EXPORT_CHAR_LIMIT) return { text: fullText, truncated: false, originalCharCount, finalCharCount: originalCharCount };
-
-  const omitted = { count: 0, names: new Set() };
-  const compactRecords = sortPacketExportRecordsForTruncation(fullRecords).map(record => compactPacketExportRecord(record, omitted));
-  const keptRecords = [];
-  let lastText = '';
-  const makeTruncation = (recordsOmitted) => ({
-    exportTruncated: true,
-    exportOriginalCharCount: originalCharCount,
-    exportFinalCharCount: 0,
-    recordsOmitted,
-    fieldsOmitted: { count: omitted.count, names: [...omitted.names].sort() },
-    truncationReason: `Full JSON export exceeded ${PACKET_EXPORT_CHAR_LIMIT} characters; repeated marker-wait records were deprioritized before verbose diagnostic fields and older/lower-value records.`
-  });
-  let payload = makePacketExportPayload([], { truncation: makeTruncation(fullRecords.length), diagnosisRecords: fullRecords });
-  lastText = JSON.stringify(payload);
-  for (const record of compactRecords) {
-    const trialRecords = [...keptRecords, record];
-    const trialPayload = makePacketExportPayload(trialRecords, { truncation: makeTruncation(fullRecords.length - trialRecords.length), diagnosisRecords: fullRecords });
-    const trialText = JSON.stringify(trialPayload);
-    if (trialText.length <= PACKET_EXPORT_CHAR_LIMIT) {
-      keptRecords.push(record);
-      lastText = trialText;
-    }
-  }
-  payload = JSON.parse(lastText);
-  while (lastText.length > PACKET_EXPORT_CHAR_LIMIT && payload.records.length) {
-    payload.records.pop();
-    payload.recordsOmitted = fullRecords.length - payload.records.length;
-    lastText = JSON.stringify(payload);
-  }
-  let previousLength = -1;
-  while (previousLength !== lastText.length) {
-    previousLength = lastText.length;
-    payload.exportFinalCharCount = previousLength;
-    lastText = JSON.stringify(payload);
-  }
-  while (lastText.length > PACKET_EXPORT_CHAR_LIMIT && payload.records.length) {
-    payload.records.pop();
-    payload.recordsOmitted = fullRecords.length - payload.records.length;
-    previousLength = -1;
-    do {
-      previousLength = lastText.length;
-      payload.exportFinalCharCount = previousLength;
-      lastText = JSON.stringify(payload);
-    } while (previousLength !== lastText.length);
-  }
-  if (lastText.length > PACKET_EXPORT_CHAR_LIMIT) {
-    payload.note = 'Export was truncated to stay within the textbox/copy hard cap.';
-    payload.terminology = undefined;
-    previousLength = -1;
-    do {
-      previousLength = lastText.length;
-      payload.exportFinalCharCount = previousLength;
-      lastText = JSON.stringify(payload);
-    } while (previousLength !== lastText.length);
-  }
-  return { text: lastText, truncated: true, originalCharCount, finalCharCount: lastText.length };
-}
-
-function setPacketExportStatus(message, tone = 'ready') {
-  const prefix = tone === 'error' ? 'export error' : tone === 'copied' ? 'copied' : 'export ready';
-  els.packetExportStatus.textContent = `${prefix}: ${message}`;
-}
-
-function clearExportPacketLogs() {
-  packetLog = [];
-  renderPacketLog();
-  els.packetExportJson.value = '';
-  els.packetExportJson.hidden = true;
-  els.packetCopyJson.disabled = true;
-  setPacketExportStatus('retained export records cleared; current visible session remains active');
-  log('WARN', 'retained microframe export log cleared by user');
-}
-
-function exportPacketLogs() {
-  const humanReadable = els.packetOut.textContent;
-  const records = packetLog.map(packetRecordForExport);
-  const exportResult = buildCappedPacketExportText(records, humanReadable);
-  const logText = exportResult.text;
+  const logText = `${humanReadable}\n\n--- structured microframe export ---\n${JSON.stringify(exportPayload, null, 2)}`;
   const bytes = byteLength(logText);
-  const filename = `microframe-rx-log-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+  const filename = `microframe-rx-log-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
   els.packetExportJson.value = logText;
   els.packetExportJson.hidden = false;
   els.packetCopyJson.disabled = false;
-  const capStatus = exportResult.truncated
-    ? `${exportResult.finalCharCount}/${PACKET_EXPORT_CHAR_LIMIT} chars, truncated from ${exportResult.originalCharCount}`
-    : `${exportResult.finalCharCount}/${PACKET_EXPORT_CHAR_LIMIT} chars`;
-  setPacketExportStatus(`${capStatus}; ${bytes} bytes`);
+  setPacketExportStatus(`${bytes} bytes`);
 
   try {
-    const blob = new Blob([logText], { type: 'application/json;charset=utf-8' });
+    const blob = new Blob([logText], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -2779,7 +2603,7 @@ function exportPacketLogs() {
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 0);
-    log('OK', `export ready: ${logText.length}/${PACKET_EXPORT_CHAR_LIMIT} chars (${bytes} bytes) from microframe log`);
+    log('OK', `export ready: ${bytes} bytes from microframe log`);
   } catch (error) {
     log('WARN', `log file download failed; copy log remains available: ${error.message}`);
   }
