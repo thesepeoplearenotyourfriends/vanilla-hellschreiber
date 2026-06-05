@@ -1,7 +1,7 @@
 <img width="546" height="258" alt="image" src="https://github.com/user-attachments/assets/576247da-b0f9-4663-ac2e-d4922bf75ed7" />
 
 
-# Vanilla Python and JavaScript Hellschreiber Toys
+# Vanilla Python, JavaScript and Android Hellschreiber Toys
 
 This repository contains three dependency-free Feld-Hell / Hellschreiber experiments:
 
