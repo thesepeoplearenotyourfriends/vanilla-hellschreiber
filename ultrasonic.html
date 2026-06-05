@@ -360,7 +360,7 @@
 
   <section class="packet-panel" aria-labelledby="packetTitle" data-panel-title="Microframe Carousel FSK">
     <h2 id="packetTitle">Microframe Carousel FSK</h2>
-    <p class="hint">Tone-delimited microframe carousel: a short 14 kHz marker starts each frame, then two-tone FSK body bits carry seq/data or META/EOF fields. RX can join mid-loop and progressively assemble readable text.</p>
+    <p class="hint">Tone-delimited microframe carousel: a short 15 kHz marker starts each frame, then two-tone FSK body bits carry seq/data or META/EOF fields. RX can join mid-loop and progressively assemble readable text.</p>
     <div class="control-row">
       <label>Mark / bit 1
         <select id="packetMark"></select>
@@ -453,7 +453,7 @@ const MICROFRAME_META_SYNC = 0x5a;
 const MICROFRAME_BYTES_PER_SLOT = 2;
 const PACKET_SYNC_BYTE = MICROFRAME_DATA_SYNC;
 const PACKET_PREAMBLE_BITS = Array.from({ length: 16 }, (_, index) => index % 2 ? 0 : 1);
-const PACKET_MARKER_DEFAULT_FREQ = 14000;
+const PACKET_MARKER_DEFAULT_FREQ = 15000;
 const PACKET_MARKER_GUARD_MS = 100;
 const PACKET_META_MARKER_PULSE_MS = 150;
 const PACKET_META_MARKER_GAP_MS = 90;
@@ -565,10 +565,10 @@ let packetLog = [];
 let packetLogSession = 0;
 let packetVisibleLogSession = 0;
 const PACKET_LOG_LIMIT = 500;
-const PACKET_VISIBLE_LIMIT = 20;
 let packetFreqTouched = false;
 let packetRxProgressLast = 0;
 let packetLastMarkerStart = 0;
+let packetBadSeq0SweepDone = false;
 let microframeMessageId = Math.floor(Math.random() * 256);
 let microframeRx = makeEmptyMicroframeRxState();
 
@@ -767,8 +767,11 @@ function resetPacketRxParser({ clearLog = false } = {}) {
   packetRxArmTime = performance.now();
   packetRxProgressLast = 0;
   packetLastMarkerStart = 0;
+  packetBadSeq0SweepDone = false;
   if (clearLog) {
     resetMicroframeAssembly();
+    packetAttemptCount = 0;
+    packetCandidateCount = 0;
     packetLogSession += 1;
     packetVisibleLogSession = packetLogSession;
     renderPacketLog();
@@ -1616,21 +1619,18 @@ function setPacketLiveStatus(text) {
 
 function renderPacketLog() {
   const visibleRecords = packetLog
-    .filter(record => record.session === packetVisibleLogSession)
-    .slice(0, PACKET_VISIBLE_LIMIT);
+    .filter(record => record.session === packetVisibleLogSession);
   if (!visibleRecords.length) {
     els.packetOut.textContent = 'No candidate or microframe records for this receive run yet.';
     return;
   }
-  const hidden = packetLog.filter(record => record.session === packetVisibleLogSession).length - visibleRecords.length;
-  const suffix = hidden > 0 ? `\n\nShowing latest ${PACKET_VISIBLE_LIMIT}; ${hidden} older record(s) retained for export.` : '';
-  els.packetOut.textContent = visibleRecords.map(record => formatPacketDiagnostic(record.decoded, record.label)).join('\n\n') + suffix;
+  els.packetOut.textContent = visibleRecords.map(record => formatPacketDiagnostic(record.decoded, record.label)).join('\n');
 }
 
 function addPacketLogRecord(decoded, now) {
   const record = makePacketLogRecord(decoded, now);
-  packetLog.unshift(record);
-  packetLog = packetLog.slice(0, PACKET_LOG_LIMIT);
+  packetLog.push(record);
+  packetLog = packetLog.slice(-PACKET_LOG_LIMIT);
   renderPacketLog();
   return record;
 }
@@ -1879,35 +1879,56 @@ function makePacketLogRecord(decoded, now = performance.now()) {
   };
 }
 
-function packetRecordForExport(record) {
-  const { decoded, ...exportRecord } = record;
-  return exportRecord;
+function compactRatio(value) {
+  const rounded = Math.max(0, Math.min(1, Number(value) || 0)).toFixed(2);
+  return rounded.startsWith('0') ? rounded.slice(1) : rounded;
+}
+
+function compactBytes(bytes = []) {
+  return bytes.map(byte => byte.toString(16).padStart(2, '0')).join(' ');
+}
+
+function expectedDataBytesForSeq(seq) {
+  return buildMicroframePlan().slots.find(slot => slot.seq === seq)?.bytes ?? [];
+}
+
+function compactOffsetSweep(decoded) {
+  if (decoded.compactOffsetSweep !== undefined) return decoded.compactOffsetSweep;
+  if (decoded.delimiterMode !== 'tone' || decoded.type !== 'data' || decoded.seq !== 0 || decoded.finalResult !== 'BAD' || packetBadSeq0SweepDone) return '';
+  packetBadSeq0SweepDone = true;
+  const symbolMs = Number(els.packetSymbol.value);
+  const mark = Number(els.packetMark.value);
+  const space = Number(els.packetSpace.value);
+  const lines = ['offsets:'];
+  for (let offset = 0; offset <= 300; offset += 25) {
+    const bits = [];
+    const confidences = [];
+    const startTime = decoded.markerEnd + PACKET_MARKER_GUARD_MS + offset;
+    for (let index = 0; index < 24; index++) {
+      const guard = symbolGuardMs(symbolMs);
+      const classified = classifySymbolWindow(startTime + index * symbolMs + guard, startTime + (index + 1) * symbolMs - guard, mark, space);
+      if (classified.missing) break;
+      bits.push(classified.bit);
+      confidences.push(classified.confidence);
+    }
+    const bytes = [];
+    for (let i = 0; i + 7 < bits.length; i += 8) bytes.push(bitsToByte(bits.slice(i, i + 8)));
+    lines.push(`${offset}: bytes=${compactBytes(bytes)} bits=${bits.join('')} conf=${compactRatio(average(confidences))}`);
+  }
+  decoded.compactOffsetSweep = `\n${lines.join('\n')}`;
+  return decoded.compactOffsetSweep;
 }
 
 function formatPacketDiagnostic(decoded, label = 'Decode candidate') {
-  const frameHex = decoded.rawFrameBytes?.length ? decoded.rawFrameBytes.map(byte => `0x${byte.toString(16).padStart(2, '0')}`).join(' ') : '(collecting)';
-  const dataLine = decoded.type === 'data' ? `Seq: ${decoded.seq}\nData bytes: ${decoded.dataBytes.map(byte => `0x${byte.toString(16).padStart(2, '0')}`).join(' ')} (${decoded.dataBytes.map(byte => sanitizeByteForDisplay(byte)).join('')})` : '';
-  const metaLine = decoded.type === 'meta' ? `META/EOF: message ${decoded.messageId}, length ${decoded.length}, total slots ${decoded.totalSlots}, CRC 0x${decoded.crc.toString(16).padStart(4, '0')}` : '';
-  const lockLine = decoded.delimiterMode === 'tone'
-    ? `Tone marker: ${formatFreq(decoded.markerFrequency)} ${decoded.markerPattern || 'unknown'}, strength ${percent(decoded.markerStrength || 0)}, duration ${Math.round(decoded.markerDurationSeen || 0)} ms, guard ${decoded.guardGapMs ?? PACKET_MARKER_GUARD_MS} ms`
-    : `Preamble: ${decoded.preambleFound ? 'found' : decoded.collectedBits ? 'partial' : 'missing'} (${decoded.preambleMatches}/${decoded.preambleBits} alternating symbols matched)
-Marker: ${decoded.syncStatus}${decoded.syncByte === null || decoded.syncByte === undefined ? '' : ` (${decoded.syncByte === MICROFRAME_DATA_SYNC ? 'data' : decoded.syncByte === MICROFRAME_META_SYNC ? 'META/EOF' : 'unknown'} 0x${decoded.syncByte.toString(16).padStart(2, '0')})`}`;
-  return `${label}
-${lockLine}
-Frame mode: ${decoded.mode}
-Frame type: ${decoded.type}
-${dataLine}${dataLine && metaLine ? '\n' : ''}${metaLine}
-Per-frame check: ${decoded.checkStatus}
-Symbol coverage: ${decoded.collectedBits} / ${decoded.expectedBits} bits (${percent(decoded.coverage)})
-Symbol decision confidence: ${percent(decoded.confidence)}
-Missed symbols: ${decoded.missing.length}${decoded.missing.length ? ` at ${decoded.missing.join(', ')}` : ''}
-Uncertain symbols: ${decoded.uncertain.length}${decoded.uncertain.length ? ` at ${decoded.uncertain.join(', ')}` : ''}
-Final result: ${decoded.finalResult}
-Reason: ${decoded.reason}
-Frame bytes: ${frameHex}
-Bits: ${decoded.groupedBits || '(collecting)'}
-Assembled text state: ${microframeRx.lastAssembledText || '(none)'}
-Assembly: ${microframeRx.lastStateLine}`;
+  const prefix = decoded.type === 'meta' ? 'META' : decoded.type === 'data' ? 'DATA' : label;
+  const common = `marker=${Math.round(decoded.markerFrequency || getPacketMarkerFreq())} strength=${compactRatio(decoded.markerStrength)} dur=${Math.round(decoded.markerDurationSeen || 0)}ms off=${Math.round(decoded.guardGapMs ?? PACKET_MARKER_GUARD_MS)}`;
+  if (decoded.type === 'meta') return `${prefix} ${common} len=${decoded.length} slots=${decoded.totalSlots} crc=${decoded.crc.toString(16).padStart(4, '0')}`;
+  if (decoded.type === 'data') {
+    const expected = expectedDataBytesForSeq(decoded.seq);
+    const text = decoded.dataBytes.map(byte => sanitizeByteForDisplay(byte)).join('');
+    return `${prefix} ${common} seq=${decoded.seq} bytes=${compactBytes(decoded.dataBytes)} text="${text}" conf=${compactRatio(decoded.confidence)} expected=${compactBytes(expected)}${compactOffsetSweep(decoded)}`;
+  }
+  return `${prefix} ${common} result=${decoded.finalResult} bytes=${compactBytes(decoded.rawFrameBytes || [])} conf=${compactRatio(decoded.confidence)}`;
 }
 
 function average(values) {
@@ -2229,40 +2250,6 @@ function runPacketSelfTest() {
   log(lines.every(line => line.startsWith('PASS')) ? 'OK' : 'BAD', 'microframe no-audio self-test complete');
 }
 
-function currentPacketSessionSettings() {
-  return {
-    carouselText: els.packetText.value || 'HELLO WORLD',
-    markFrequency: Number(els.packetMark.value),
-    spaceFrequency: Number(els.packetSpace.value),
-    symbolLengthMs: Number(els.packetSymbol.value),
-    detectorIntervalMs: DETECT_INTERVAL_MS,
-    loopGapSeconds: Number(els.packetInterval.value),
-    frameMode: getPacketFrameMode(),
-    markerMode: getPacketMarkerMode(),
-    frameMarkerFrequency: getPacketMarkerFreq(),
-    markerDurationMs: getPacketMarkerDurationMs(),
-    markerGuardGapMs: PACKET_MARKER_GUARD_MS,
-    dataBytesPerSlot: MICROFRAME_BYTES_PER_SLOT,
-    dataSyncMarker: `0x${MICROFRAME_DATA_SYNC.toString(16).padStart(2, '0')}`,
-    metaEofMarker: `0x${MICROFRAME_META_SYNC.toString(16).padStart(2, '0')}`,
-    assembly: microframeRx.lastStateLine,
-    assembledTextState: microframeRx.lastAssembledText,
-    legacyPreambleBits: PACKET_PREAMBLE_BITS.length,
-    syncByte: getPacketMarkerMode() === 'legacy' ? `0x${PACKET_SYNC_BYTE.toString(16).padStart(2, '0')}` : null,
-    retainedEntryLimit: PACKET_LOG_LIMIT
-  };
-}
-
-function recentRxSnapshots(limit = 50) {
-  return traceBuffer.slice(-limit).map(sample => ({
-    timestamp: new Date(Date.now() - (performance.now() - sample.timestamp)).toISOString(),
-    peak: sample.peak,
-    strength: sample.strength,
-    mode: sample.mode,
-    energyMap: sample.meta?.energyMap ?? null
-  }));
-}
-
 function byteLength(text) {
   return new TextEncoder().encode(text).length;
 }
@@ -2274,30 +2261,7 @@ function setPacketExportStatus(message, tone = 'ready') {
 
 function exportPacketLogs() {
   const humanReadable = els.packetOut.textContent;
-  const records = packetLog
-    .filter(record => record.session === packetVisibleLogSession)
-    .map(packetRecordForExport);
-  const exportPayload = {
-    exportedAt: new Date().toISOString(),
-    terminology: {
-      candidateLock: 'legacy preamble-ish detection, not yet trusted',
-      markerAcquisition: '14 kHz out-of-band event that starts a tone-delimited microframe',
-      microframe: 'one small seq/data or META/EOF unit',
-      observation: 'heard value for a sequence slot',
-      slot: 'receiver storage position for seq N',
-      metaEof: 'frame carrying length/total slots/whole-message CRC'
-    },
-    settings: currentPacketSessionSettings(),
-    assembly: {
-      textState: microframeRx.lastAssembledText,
-      status: microframeRx.lastStateLine,
-      finalCrcOk: microframeRx.finalCrcOk,
-      meta: microframeRx.meta
-    },
-    humanReadable,
-    records
-  };
-  const logText = `${humanReadable}\n\n--- structured microframe export ---\n${JSON.stringify(exportPayload, null, 2)}`;
+  const logText = `${humanReadable}\nassembly=${microframeRx.lastAssembledText || '(none)'} status="${microframeRx.lastStateLine}"`;
   const bytes = byteLength(logText);
   const filename = `microframe-rx-log-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
   els.packetExportJson.value = logText;
@@ -2421,7 +2385,7 @@ function attachEvents() {
     packetRxActive = true;
     els.packetRx.classList.add('active');
     resetPacketRxParser({ clearLog: true });
-    setPacketLiveStatus('Microframe RX armed; assembly fresh and watching for 14 kHz tone-delimited frame markers. Trace/activity continue updating.');
+    setPacketLiveStatus(`Microframe RX armed; assembly fresh and watching for ${formatFreq(getPacketMarkerFreq())} tone-delimited frame markers. Trace/activity continue updating.`);
     updatePacketControlLabels();
     log('OK', 'microframe receiver armed with fresh assembly state');
   });
