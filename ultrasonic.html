@@ -21,6 +21,7 @@
       --good: #74d99a;
       --weak: #e5bc62;
       --bad: #d47878;
+      --conflict: #f0a94d;
       --waiting: #7f91a6;
       --menu: #0c1724;
     }
@@ -190,6 +191,32 @@
     }
 
     .packet-panel { margin-top: 1rem; }
+    .assembled-message {
+      align-items: baseline;
+      background: #0b1420;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.15rem;
+      margin: 0.75rem 0;
+      min-height: 3.1rem;
+      padding: 0.8rem 0.9rem;
+    }
+    .assembled-char {
+      color: var(--muted);
+      font: 1.9rem/1.1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      min-width: 1.08ch;
+      text-align: center;
+      white-space: pre;
+    }
+    .assembled-char.missing { color: var(--waiting); opacity: 0.72; }
+    .assembled-char.once { color: var(--muted); opacity: 0.72; }
+    .assembled-char.repeat { color: var(--ink); }
+    .assembled-char.strong { color: #ffffff; font-weight: 800; text-shadow: 0 0 10px rgba(114, 215, 255, 0.35); }
+    .assembled-char.conflict { color: var(--conflict); text-decoration: underline; text-decoration-thickness: 0.14em; text-underline-offset: 0.14em; }
+    .crc-ok { color: var(--good); font-size: 1.6rem; font-weight: 800; margin-left: 0.35rem; }
+    .crc-bad { color: var(--bad); font-size: 1rem; font-weight: 800; margin-left: 0.35rem; }
     .packet-export-tools {
       display: grid;
       gap: 0.55rem;
@@ -331,9 +358,9 @@
     </section>
   </div>
 
-  <section class="packet-panel" aria-labelledby="packetTitle" data-panel-title="Experimental Packet FSK">
-    <h2 id="packetTitle">Experimental Packet FSK</h2>
-    <p class="hint">Two-tone FSK: mark = bit 1, space = bit 0. Packet format: alternating preamble, sync byte, length byte, payload, checksum.</p>
+  <section class="packet-panel" aria-labelledby="packetTitle" data-panel-title="Microframe Carousel FSK">
+    <h2 id="packetTitle">Microframe Carousel FSK</h2>
+    <p class="hint">Two-tone FSK carousel: short self-contained microframes repeat continuously. RX can join mid-loop, store observations by sequence slot, and progressively assemble readable text.</p>
     <div class="control-row">
       <label>Mark / bit 1
         <select id="packetMark"></select>
@@ -350,19 +377,25 @@
           <option value="80">80 ms</option>
         </select>
       </label>
-      <label>Packet text
+      <label>Frame mode
+        <select id="packetFrameMode">
+          <option value="fast" selected>Fast / unverified</option>
+          <option value="checked">Checked / verified</option>
+        </select>
+      </label>
+      <label>Carousel text
         <input id="packetText" type="text" value="HELLO WORLD" maxlength="48">
       </label>
-      <label>Loop interval seconds
-        <input id="packetInterval" type="number" min="1" max="30" step="0.5" value="2">
+      <label>Loop gap seconds
+        <input id="packetInterval" type="number" min="0" max="10" step="0.25" value="0.5">
       </label>
     </div>
     <div class="row">
-      <button id="sendPacket" class="primary">Send Packet</button>
-      <button id="startPacketLoop">Start Loop</button>
+      <button id="sendPacket" class="primary">Send Carousel Pass</button>
+      <button id="startPacketLoop">Start Carousel</button>
       <button id="stopPacketLoop">Stop Loop</button>
       <button id="packetRx">Receive Mode</button>
-      <button id="packetSelfTest">Packet self-test</button>
+      <button id="packetSelfTest">Microframe self-test</button>
       <button id="packetExportLogs">Export Logs</button>
     </div>
     <div class="packet-export-tools" aria-live="polite">
@@ -372,10 +405,13 @@
         <span id="packetExportStatus" class="hint">Exported log will appear here after export.</span>
       </div>
     </div>
-    <h3>Live Packet RX Status</h3>
-    <div class="packet-output" id="packetLiveStatus">Packet RX idle.</div>
-    <h3>Candidate / Packet Log</h3>
-    <div class="packet-output" id="packetOut">No candidate or packet records yet.</div>
+    <h3>Assembled Message</h3>
+    <div class="assembled-message" id="assembledMessage" aria-live="polite"></div>
+    <div class="packet-output" id="assemblyStatus">No observations yet. CRC pending.</div>
+    <h3>Live Microframe RX Status</h3>
+    <div class="packet-output" id="packetLiveStatus">Microframe RX idle.</div>
+    <h3>Candidate / Microframe Log</h3>
+    <div class="packet-output" id="packetOut">No candidate or microframe records yet.</div>
   </section>
 </main>
 
@@ -400,7 +436,10 @@ const EDGE_IGNORE_MS = 50;
 const SYMBOL_GUARD_FRACTION = 0.24;
 const SYNC_PREAMBLE_SYMBOL_MS = 100;
 const SYNC_PREAMBLE_BITS = Array.from({ length: 12 }, (_, index) => index % 2 ? 0 : 1);
-const PACKET_SYNC_BYTE = 0xa7;
+const MICROFRAME_DATA_SYNC = 0xa7;
+const MICROFRAME_META_SYNC = 0x5a;
+const MICROFRAME_BYTES_PER_SLOT = 2;
+const PACKET_SYNC_BYTE = MICROFRAME_DATA_SYNC;
 const PACKET_PREAMBLE_BITS = Array.from({ length: 16 }, (_, index) => index % 2 ? 0 : 1);
 const TX_STATES = {
   IDLE: 'txIdle',
@@ -443,6 +482,7 @@ const els = {
   packetMark: document.getElementById('packetMark'),
   packetSpace: document.getElementById('packetSpace'),
   packetSymbol: document.getElementById('packetSymbol'),
+  packetFrameMode: document.getElementById('packetFrameMode'),
   packetText: document.getElementById('packetText'),
   packetInterval: document.getElementById('packetInterval'),
   sendPacket: document.getElementById('sendPacket'),
@@ -456,6 +496,8 @@ const els = {
   packetExportStatus: document.getElementById('packetExportStatus'),
   closedPanels: document.getElementById('closedPanels'),
   packetLiveStatus: document.getElementById('packetLiveStatus'),
+  assembledMessage: document.getElementById('assembledMessage'),
+  assemblyStatus: document.getElementById('assemblyStatus'),
   packetOut: document.getElementById('packetOut'),
   results: document.getElementById('results'),
   recommendation: document.getElementById('recommendation'),
@@ -503,6 +545,8 @@ const PACKET_LOG_LIMIT = 500;
 const PACKET_VISIBLE_LIMIT = 20;
 let packetFreqTouched = false;
 let packetRxProgressLast = 0;
+let microframeMessageId = Math.floor(Math.random() * 256);
+let microframeRx = makeEmptyMicroframeRxState();
 
 function getSelectedSymbolMs() {
   return Number(els.symbolLength.value);
@@ -667,12 +711,12 @@ function setTxState(state, label = state) {
 
 
 function updatePacketControlLabels() {
-  els.startPacketLoop.textContent = 'Start Loop';
-  els.startPacketLoop.title = packetLoopActive ? `TX loop running; sequence index ${packetLoopIndex}` : 'TX loop stopped; next start begins at index 0';
+  els.startPacketLoop.textContent = packetLoopActive ? 'Carousel Running' : 'Start Carousel';
+  els.startPacketLoop.title = packetLoopActive ? `TX carousel running; pass index ${packetLoopIndex}` : 'TX carousel stopped; next start begins at seq 0';
   els.stopPacketLoop.textContent = 'Stop Loop';
-  els.stopPacketLoop.title = 'Stop TX and reset the packet loop sequence to index 0';
+  els.stopPacketLoop.title = 'Stop TX and reset the carousel sequence to seq 0';
   els.packetRx.textContent = packetRxActive ? 'Receive Mode On' : 'Receive Mode';
-  els.packetRx.title = packetRxActive ? `RX parser ${packetRxState}` : 'Start receive mode with a fresh parser';
+  els.packetRx.title = packetRxActive ? `Microframe RX parser ${packetRxState}` : 'Start receive mode with a fresh microframe assembly';
 }
 
 function clearPacketLoopTimer() {
@@ -698,6 +742,7 @@ function resetPacketRxParser({ clearLog = false } = {}) {
   packetRxArmTime = performance.now();
   packetRxProgressLast = 0;
   if (clearLog) {
+    resetMicroframeAssembly();
     packetLogSession += 1;
     packetVisibleLogSession = packetLogSession;
     renderPacketLog();
@@ -1225,6 +1270,206 @@ function bitsToByte(bits) {
   return bits.reduce((value, bit) => (value << 1) | (bit ? 1 : 0), 0);
 }
 
+
+function getPacketFrameMode() {
+  return els.packetFrameMode?.value || 'fast';
+}
+
+function crc16Ccitt(bytes) {
+  let crc = 0xffff;
+  for (const byte of bytes) {
+    crc ^= byte << 8;
+    for (let bit = 0; bit < 8; bit++) crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) & 0xffff : (crc << 1) & 0xffff;
+  }
+  return crc & 0xffff;
+}
+
+function makeEmptyMicroframeRxState() {
+  return {
+    slots: new Map(),
+    meta: null,
+    finalCrcOk: false,
+    finalCrcChecked: false,
+    lastAssembledText: '',
+    lastStateLine: 'No observations yet. CRC pending.'
+  };
+}
+
+function resetMicroframeAssembly() {
+  microframeRx = makeEmptyMicroframeRxState();
+  renderMicroframeAssembly();
+}
+
+function buildMicroframePlan(text = els.packetText.value || 'HELLO WORLD') {
+  const payload = textToBytes(text);
+  const totalSlots = Math.max(1, Math.ceil(payload.length / MICROFRAME_BYTES_PER_SLOT));
+  const slots = [];
+  for (let seq = 0; seq < totalSlots; seq++) {
+    const offset = seq * MICROFRAME_BYTES_PER_SLOT;
+    slots.push({ seq, bytes: [payload[offset] ?? 95, payload[offset + 1] ?? 95] });
+  }
+  const crc = crc16Ccitt(payload);
+  return { payload, totalSlots, slots, crc, messageId: microframeMessageId };
+}
+
+function frameBytesWithOptionalCheck(bytes, mode = getPacketFrameMode()) {
+  if (mode !== 'checked') return bytes;
+  const check = bytes.slice(1).reduce((value, byte) => value ^ byte, 0) & 0xff;
+  return [...bytes, check];
+}
+
+function buildMicroframeBytes(frame, mode = getPacketFrameMode()) {
+  if (frame.type === 'meta') {
+    const bytes = [MICROFRAME_META_SYNC, frame.messageId, frame.length & 0xff, frame.totalSlots & 0xff, frame.crc & 0xff, (frame.crc >> 8) & 0xff];
+    return frameBytesWithOptionalCheck(bytes, mode);
+  }
+  return frameBytesWithOptionalCheck([MICROFRAME_DATA_SYNC, frame.seq & 0xff, frame.bytes[0] & 0xff, frame.bytes[1] & 0xff], mode);
+}
+
+function buildMicroframeCarouselFrames(text = els.packetText.value || 'HELLO WORLD') {
+  const plan = buildMicroframePlan(text);
+  const dataFrames = plan.slots.map(slot => ({ type: 'data', seq: slot.seq, bytes: slot.bytes }));
+  const metaFrame = { type: 'meta', messageId: plan.messageId, length: plan.payload.length, totalSlots: plan.totalSlots, crc: plan.crc };
+  return { ...plan, frames: [...dataFrames, metaFrame] };
+}
+
+function buildMicroframeBitsForFrame(frame, mode = getPacketFrameMode()) {
+  return [...PACKET_PREAMBLE_BITS, ...buildMicroframeBytes(frame, mode).flatMap(byteToBits)];
+}
+
+function sanitizeByteForDisplay(byte) {
+  return byte >= 32 && byte <= 126 ? String.fromCharCode(byte) : '?';
+}
+
+function decodeMicroframeBytes(bytes, mode = getPacketFrameMode()) {
+  const checked = mode === 'checked';
+  const minimum = checked ? 5 : 4;
+  if (bytes.length < 1) return { type: 'candidate', finalResult: 'PARTIAL', reason: 'sync/marker byte missing' };
+  const sync = bytes[0];
+  if (sync === MICROFRAME_DATA_SYNC) {
+    if (bytes.length < minimum) return { type: 'data', finalResult: 'PARTIAL', reason: 'data microframe fields still collecting', syncByte: sync };
+    const [seq, byte0, byte1] = bytes.slice(1, 4);
+    const expectedCheck = (seq ^ byte0 ^ byte1) & 0xff;
+    const receivedCheck = checked ? bytes[4] : null;
+    const checkPassed = !checked || receivedCheck === expectedCheck;
+    return { type: 'data', syncByte: sync, seq, dataBytes: [byte0, byte1], expectedCheck, receivedCheck, checkPassed, finalResult: checkPassed ? 'OK' : 'BAD', reason: checkPassed ? 'microframe observation accepted' : 'per-frame check byte failed' };
+  }
+  if (sync === MICROFRAME_META_SYNC) {
+    const needed = checked ? 7 : 6;
+    if (bytes.length < needed) return { type: 'meta', finalResult: 'PARTIAL', reason: 'META/EOF fields still collecting', syncByte: sync };
+    const [messageId, length, totalSlots, crcLo, crcHi] = bytes.slice(1, 6);
+    const crc = crcLo | (crcHi << 8);
+    const expectedCheck = (messageId ^ length ^ totalSlots ^ crcLo ^ crcHi) & 0xff;
+    const receivedCheck = checked ? bytes[6] : null;
+    const checkPassed = !checked || receivedCheck === expectedCheck;
+    return { type: 'meta', syncByte: sync, messageId, length, totalSlots, crc, expectedCheck, receivedCheck, checkPassed, finalResult: checkPassed ? 'OK' : 'BAD', reason: checkPassed ? 'META/EOF accepted' : 'META/EOF check byte failed' };
+  }
+  return { type: 'candidate', syncByte: sync, finalResult: 'BAD', reason: `candidate lock rejected: marker 0x${sync.toString(16).padStart(2, '0')} is not data or META/EOF` };
+}
+
+function bestObservationForSlot(slot) {
+  let best = null;
+  for (const [key, entry] of slot.choices.entries()) {
+    if (!best || entry.count > best.count || (entry.count === best.count && entry.lastSeen > best.lastSeen)) best = { key, ...entry };
+  }
+  return best;
+}
+
+function observeMicroframe(decoded, now = performance.now()) {
+  if (decoded.finalResult !== 'OK') return null;
+  if (decoded.type === 'meta') {
+    microframeRx.meta = { messageId: decoded.messageId, length: decoded.length, totalSlots: decoded.totalSlots, crc: decoded.crc, lastSeen: now };
+    updateMicroframeCompletion();
+    renderMicroframeAssembly();
+    return { observation: 'meta' };
+  }
+  if (decoded.type !== 'data') return null;
+  const key = decoded.dataBytes.join(',');
+  const slot = microframeRx.slots.get(decoded.seq) || { choices: new Map(), firstSeen: now, lastSeen: now };
+  const entry = slot.choices.get(key) || { bytes: decoded.dataBytes, count: 0, firstSeen: now, lastSeen: now };
+  entry.count += 1;
+  entry.lastSeen = now;
+  slot.choices.set(key, entry);
+  slot.lastSeen = now;
+  microframeRx.slots.set(decoded.seq, slot);
+  updateMicroframeCompletion();
+  renderMicroframeAssembly();
+  return { observation: 'slot', count: entry.count };
+}
+
+function assembledBytesFromSlots() {
+  const meta = microframeRx.meta;
+  const inferredSlots = microframeRx.slots.size ? Math.max(...microframeRx.slots.keys()) + 1 : 0;
+  const totalSlots = meta?.totalSlots ?? inferredSlots;
+  const bytes = [];
+  const missingSlots = [];
+  for (let seq = 0; seq < totalSlots; seq++) {
+    const slot = microframeRx.slots.get(seq);
+    if (!slot) {
+      missingSlots.push(seq);
+      bytes.push(null, null);
+      continue;
+    }
+    const best = bestObservationForSlot(slot);
+    bytes.push(...best.bytes);
+  }
+  return { bytes: meta ? bytes.slice(0, meta.length) : bytes, totalSlots, missingSlots };
+}
+
+function updateMicroframeCompletion() {
+  const meta = microframeRx.meta;
+  microframeRx.finalCrcOk = false;
+  microframeRx.finalCrcChecked = false;
+  if (!meta) return;
+  const { bytes, missingSlots } = assembledBytesFromSlots();
+  if (missingSlots.length || bytes.some(byte => byte === null) || bytes.length < meta.length) return;
+  const crc = crc16Ccitt(bytes);
+  microframeRx.finalCrcChecked = true;
+  microframeRx.finalCrcOk = crc === meta.crc;
+}
+
+function renderMicroframeAssembly() {
+  if (!els.assembledMessage) return;
+  const { bytes, totalSlots, missingSlots } = assembledBytesFromSlots();
+  els.assembledMessage.innerHTML = '';
+  if (!bytes.length) {
+    const span = document.createElement('span');
+    span.className = 'assembled-char missing';
+    span.textContent = '?';
+    els.assembledMessage.append(span);
+  }
+  bytes.forEach((byte, index) => {
+    const seq = Math.floor(index / MICROFRAME_BYTES_PER_SLOT);
+    const slot = microframeRx.slots.get(seq);
+    const best = slot ? bestObservationForSlot(slot) : null;
+    const className = !slot ? 'missing' : slot.choices.size > 1 ? 'conflict' : best.count >= 4 ? 'strong' : best.count >= 2 ? 'repeat' : 'once';
+    const span = document.createElement('span');
+    span.className = `assembled-char ${className}`;
+    span.title = slot ? `seq ${seq}, observations ${best.count}${slot.choices.size > 1 ? ', conflicting values heard' : ''}` : `seq ${seq} missing`;
+    span.textContent = byte === null ? '?' : sanitizeByteForDisplay(byte);
+    els.assembledMessage.append(span);
+  });
+  if (microframeRx.finalCrcOk) {
+    const check = document.createElement('span');
+    check.className = 'crc-ok';
+    check.textContent = '✅';
+    check.title = 'Message complete: all slots present and whole-message CRC matches';
+    els.assembledMessage.append(check);
+  } else if (microframeRx.finalCrcChecked && !microframeRx.finalCrcOk) {
+    const bad = document.createElement('span');
+    bad.className = 'crc-bad';
+    bad.textContent = 'CRC BAD';
+    els.assembledMessage.append(bad);
+  }
+  const meta = microframeRx.meta;
+  const receivedSlots = microframeRx.slots.size;
+  const crcText = !meta ? 'CRC pending: META/EOF not yet heard.' : microframeRx.finalCrcOk ? `Message complete: CRC 0x${meta.crc.toString(16).padStart(4, '0')} matched.` : microframeRx.finalCrcChecked ? `CRC failed against META/EOF 0x${meta.crc.toString(16).padStart(4, '0')}; keep listening for better observations.` : `CRC pending: META/EOF heard, waiting for ${missingSlots.length} missing slot(s).`;
+  const progressText = meta ? `${receivedSlots} / ${meta.totalSlots} slots observed` : `${receivedSlots} slot(s) observed; total unknown until META/EOF`;
+  microframeRx.lastAssembledText = bytes.map(byte => byte === null ? '?' : sanitizeByteForDisplay(byte)).join('');
+  microframeRx.lastStateLine = `${progressText}. ${crcText}`;
+  els.assemblyStatus.textContent = microframeRx.lastStateLine;
+}
+
 function buildPacketBytes(text = els.packetText.value || 'HELLO WORLD') {
   const payload = textToBytes(text);
   const checksum = payload.reduce((sum, byte) => (sum + byte) & 0xff, 0);
@@ -1255,15 +1500,25 @@ async function sendPacketOnce({ fromLoop = false } = {}) {
   const mark = Number(els.packetMark.value);
   const space = Number(els.packetSpace.value);
   const symbolMs = Number(els.packetSymbol.value);
-  const bits = buildPacketBits();
+  const mode = getPacketFrameMode();
+  const plan = buildMicroframeCarouselFrames();
   const sequence = [
-    { name: 'packet unscored 1s warmup carrier', tones: [space], duration: 1000, gap: 0, afterGap: Math.max(100, symbolMs) },
-    { name: `packet ${bits.length} bits`, tones: bits.map(bit => bit ? mark : space), duration: symbolMs, gap: 0, afterGap: 0 }
+    { name: 'microframe carousel warmup carrier', tones: [space], duration: Math.max(250, symbolMs * 3), gap: 0, afterGap: Math.max(80, symbolMs) }
   ];
-  log('OK', `packet TX ${bits.length} bits, mark ${formatFreq(mark)}, space ${formatFreq(space)}, ${symbolMs} ms symbols`);
-  await playSequence(sequence, TX_STATES.PATTERN, 'packet TX');
+  for (const frame of plan.frames) {
+    const bits = buildMicroframeBitsForFrame(frame, mode);
+    sequence.push({
+      name: frame.type === 'meta' ? `META/EOF length ${plan.payload.length}, slots ${plan.totalSlots}, CRC 0x${plan.crc.toString(16).padStart(4, '0')}` : `microframe seq ${frame.seq}: ${frame.bytes.map(byte => sanitizeByteForDisplay(byte)).join('')}`,
+      tones: bits.map(bit => bit ? mark : space),
+      duration: symbolMs,
+      gap: 0,
+      afterGap: Math.max(40, symbolMs * 0.5)
+    });
+  }
+  const totalBits = plan.frames.reduce((sum, frame) => sum + buildMicroframeBitsForFrame(frame, mode).length, 0);
+  log('OK', `microframe carousel TX pass: ${plan.totalSlots} data slots + META/EOF, ${totalBits} bits, ${mode} mode`);
+  await playSequence(sequence, TX_STATES.PATTERN, 'microframe carousel TX');
 }
-
 
 async function runPacketLoop() {
   if (packetLoopActive) return;
@@ -1271,7 +1526,7 @@ async function runPacketLoop() {
   packetLoopActive = true;
   const session = packetLoopSession;
   updatePacketControlLabels();
-  log('OK', `packet loop started every ${els.packetInterval.value}s from index 0`);
+  log('OK', `microframe carousel started; loop gap ${els.packetInterval.value}s from seq 0`);
   while (packetLoopActive && session === packetLoopSession) {
     updatePacketControlLabels();
     await sendPacketOnce({ fromLoop: true });
@@ -1284,7 +1539,7 @@ async function runPacketLoop() {
         resolve();
       };
       packetLoopTimer = {
-        id: setTimeout(done, Math.max(1, Number(els.packetInterval.value)) * 1000),
+        id: setTimeout(done, Math.max(0, Number(els.packetInterval.value)) * 1000),
         resolve: done
       };
     });
@@ -1301,7 +1556,7 @@ function renderPacketLog() {
     .filter(record => record.session === packetVisibleLogSession)
     .slice(0, PACKET_VISIBLE_LIMIT);
   if (!visibleRecords.length) {
-    els.packetOut.textContent = 'No candidate or packet records for this receive run yet.';
+    els.packetOut.textContent = 'No candidate or microframe records for this receive run yet.';
     return;
   }
   const hidden = packetLog.filter(record => record.session === packetVisibleLogSession).length - visibleRecords.length;
@@ -1416,46 +1671,129 @@ function decodePacketFrom(startTime, now = performance.now()) {
   return decodePacketBits(bits, { preambleBits, uncertain, missing, confidences });
 }
 
+
+function decodeMicroframeFrom(startTime, now = performance.now()) {
+  const mark = Number(els.packetMark.value);
+  const space = Number(els.packetSpace.value);
+  const symbolMs = Number(els.packetSymbol.value);
+  const mode = getPacketFrameMode();
+  const preambleBits = PACKET_PREAMBLE_BITS.length;
+  const maxBytes = mode === 'checked' ? 7 : 6;
+  const maxBits = preambleBits + maxBytes * 8;
+  const bits = [];
+  const uncertain = [];
+  const missing = [];
+  const confidences = [];
+  for (let index = 0; index < maxBits; index++) {
+    const guard = symbolGuardMs(symbolMs);
+    const start = startTime + index * symbolMs + guard;
+    const end = startTime + (index + 1) * symbolMs - guard;
+    if (now < end) break;
+    const classified = classifySymbolWindow(start, end, mark, space);
+    const position = index + 1;
+    if (classified.missing) { missing.push(position); break; }
+    bits.push(classified.bit);
+    confidences.push(classified.confidence);
+    if (classified.confidence < 0.18 || Math.max(classified.markAvg, classified.spaceAvg) < 0.10) uncertain.push(position);
+    if (bits.length >= preambleBits + 8) {
+      const sync = bitsToByte(bits.slice(preambleBits, preambleBits + 8));
+      const neededBytes = sync === MICROFRAME_META_SYNC ? (mode === 'checked' ? 7 : 6) : (mode === 'checked' ? 5 : 4);
+      if (bits.length >= preambleBits + neededBytes * 8) break;
+      if (sync !== MICROFRAME_DATA_SYNC && sync !== MICROFRAME_META_SYNC && bits.length >= preambleBits + 8) break;
+    }
+  }
+  const preambleSlice = bits.slice(0, preambleBits);
+  const preambleMatches = preambleSlice.filter((bit, index) => bit === PACKET_PREAMBLE_BITS[index]).length;
+  const preambleFound = preambleSlice.length >= preambleBits && preambleMatches >= Math.ceil(preambleBits * 0.75);
+  const payloadBits = bits.slice(preambleBits);
+  const bytes = [];
+  for (let i = 0; i + 7 < payloadBits.length; i += 8) bytes.push(bitsToByte(payloadBits.slice(i, i + 8)));
+  const decoded = decodeMicroframeBytes(bytes, mode);
+  const syncStatus = bytes.length ? (decoded.type === 'candidate' ? 'wrong marker' : 'found') : 'missing';
+  const expectedPayloadBytes = bytes[0] === MICROFRAME_META_SYNC ? (mode === 'checked' ? 7 : 6) : (mode === 'checked' ? 5 : 4);
+  const expectedBits = preambleBits + expectedPayloadBytes * 8;
+  let finalResult = decoded.finalResult;
+  let reason = decoded.reason;
+  if (!preambleFound) { finalResult = bits.length ? 'PARTIAL' : 'NO LOCK'; reason = 'candidate lock below preamble match threshold'; }
+  return {
+    ...decoded,
+    bits,
+    groupedBits: bits.map((bit, index) => missing.includes(index + 1) ? '·' : uncertain.includes(index + 1) ? '?' : String(bit)).join('').replace(/(.{8})/g, '$1 ').trim(),
+    preambleFound,
+    preambleMatches,
+    preambleBits,
+    syncStatus,
+    syncByte: bytes.length ? bytes[0] : null,
+    rawFrameBytes: bytes,
+    finalResult,
+    reason,
+    expectedBits,
+    collectedBits: bits.length,
+    frameBytesCollected: bytes.length,
+    expectedFrameBytes: expectedPayloadBytes,
+    coverage: bits.length / Math.max(1, expectedBits),
+    confidence: average(confidences),
+    uncertain,
+    missing,
+    complete: bytes.length >= expectedPayloadBytes,
+    checkStatus: decoded.checkPassed === undefined ? 'not used' : decoded.checkPassed ? 'OK' : 'BAD',
+    mode
+  };
+}
+
 function packetKindFromDecoded(decoded) {
   if (!decoded.preambleFound) return 'candidate_lock';
-  if (decoded.syncBitsCollected === 8 && decoded.syncByte !== PACKET_SYNC_BYTE) return 'false_lock';
-  if (decoded.complete) return 'packet_complete';
-  if (decoded.syncByte === PACKET_SYNC_BYTE && decoded.length !== null) return decoded.missing.length ? 'packet_timeout' : 'packet_collecting';
+  if (decoded.type === 'candidate') return 'false_lock';
+  if (decoded.finalResult === 'BAD') return decoded.type === 'meta' ? 'meta_rejected' : 'microframe_rejected';
+  if (decoded.type === 'meta' && decoded.finalResult === 'OK') return 'meta_eof';
+  if (decoded.type === 'data' && decoded.finalResult === 'OK') return 'microframe_observation';
   return 'candidate_lock';
 }
 
 function packetLabelForKind(kind, decoded) {
-  if (kind === 'packet_complete') return `Packet ${String(packetAttemptCount).padStart(3, '0')} complete: checksum ${decoded.checksumStatus}`;
-  if (kind === 'packet_timeout') return `Packet ${String(packetAttemptCount).padStart(3, '0')} partial: timed out before complete`;
-  if (kind === 'packet_collecting') return `Packet ${String(packetAttemptCount).padStart(3, '0')}: length known, collecting payload`;
-  if (kind === 'false_lock') return `Candidate ${String(packetCandidateCount).padStart(3, '0')}: false lock / wrong sync`;
-  return `Candidate ${String(packetCandidateCount).padStart(3, '0')}: preamble candidate`;
+  if (kind === 'microframe_observation') return `Microframe observation ${String(packetAttemptCount).padStart(3, '0')}: seq ${decoded.seq}`;
+  if (kind === 'meta_eof') return `META/EOF ${String(packetAttemptCount).padStart(3, '0')}: length ${decoded.length}, slots ${decoded.totalSlots}`;
+  if (kind === 'microframe_rejected') return `Microframe ${String(packetAttemptCount).padStart(3, '0')} rejected`;
+  if (kind === 'meta_rejected') return `META/EOF ${String(packetAttemptCount).padStart(3, '0')} rejected`;
+  if (kind === 'false_lock') return `Candidate ${String(packetCandidateCount).padStart(3, '0')}: false lock / wrong marker`;
+  return `Candidate ${String(packetCandidateCount).padStart(3, '0')}: candidate lock`;
 }
 
 function makePacketLogRecord(decoded, now = performance.now()) {
   const kind = packetKindFromDecoded(decoded);
-  if (kind.startsWith('packet_')) packetAttemptCount += 1;
+  if (['microframe_observation', 'meta_eof', 'microframe_rejected', 'meta_rejected'].includes(kind)) packetAttemptCount += 1;
   else packetCandidateCount += 1;
   const timestampDate = new Date(Date.now() - (performance.now() - now));
-  const syncHex = decoded.syncByte === null ? null : `0x${decoded.syncByte.toString(16).padStart(2, '0')}`;
-  const lengthByte = decoded.length === null ? null : decoded.length;
+  const syncHex = decoded.syncByte === null || decoded.syncByte === undefined ? null : `0x${decoded.syncByte.toString(16).padStart(2, '0')}`;
   const label = packetLabelForKind(kind, decoded);
-  const syncStatus = kind === 'false_lock' ? 'wrong sync' : decoded.syncStatus;
+  const bestSlot = decoded.type === 'data' ? microframeRx.slots.get(decoded.seq) : null;
+  const bestObservation = bestSlot ? bestObservationForSlot(bestSlot) : null;
   return {
     kind,
     timestamp: timestampDate.toISOString(),
     session: packetLogSession,
     label,
     collectedBits: decoded.collectedBits,
-    expectedBits: decoded.length === null ? null : decoded.expectedBits,
+    expectedBits: decoded.expectedBits,
     preambleMatches: decoded.preambleMatches,
-    syncStatus,
+    syncStatus: kind === 'false_lock' ? 'wrong marker' : decoded.syncStatus,
     syncByte: syncHex,
-    lengthByte,
-    checksumStatus: decoded.checksumStatus,
+    frameMode: decoded.mode,
+    frameType: decoded.type,
+    seq: decoded.seq ?? null,
+    dataBytes: decoded.dataBytes ? [...decoded.dataBytes] : null,
+    dataText: decoded.dataBytes ? decoded.dataBytes.map(byte => sanitizeByteForDisplay(byte)).join('') : null,
+    repetitionCount: bestObservation?.count ?? null,
+    confidence: decoded.confidence,
+    perFrameCheck: decoded.checkStatus,
+    meta: decoded.type === 'meta' ? { messageId: decoded.messageId, length: decoded.length, totalSlots: decoded.totalSlots, crc: decoded.crc } : null,
+    finalCrcOk: microframeRx.finalCrcOk,
     finalResult: decoded.finalResult,
     reason: decoded.reason,
+    assembledTextState: microframeRx.lastAssembledText,
+    assemblyStatus: microframeRx.lastStateLine,
     rawBits: decoded.bits.join(''),
+    rawFrameBytes: decoded.rawFrameBytes ? decoded.rawFrameBytes.map(byte => `0x${byte.toString(16).padStart(2, '0')}`) : [],
     uncertainSymbols: [...decoded.uncertain],
     missedSymbols: [...decoded.missing],
     decoded
@@ -1468,24 +1806,26 @@ function packetRecordForExport(record) {
 }
 
 function formatPacketDiagnostic(decoded, label = 'Decode candidate') {
-  const expectedPayloadBytes = decoded.length ?? 'missing';
+  const frameHex = decoded.rawFrameBytes?.length ? decoded.rawFrameBytes.map(byte => `0x${byte.toString(16).padStart(2, '0')}`).join(' ') : '(collecting)';
+  const dataLine = decoded.type === 'data' ? `Seq: ${decoded.seq}\nData bytes: ${decoded.dataBytes.map(byte => `0x${byte.toString(16).padStart(2, '0')}`).join(' ')} (${decoded.dataBytes.map(byte => sanitizeByteForDisplay(byte)).join('')})` : '';
+  const metaLine = decoded.type === 'meta' ? `META/EOF: message ${decoded.messageId}, length ${decoded.length}, total slots ${decoded.totalSlots}, CRC 0x${decoded.crc.toString(16).padStart(4, '0')}` : '';
   return `${label}
 Preamble: ${decoded.preambleFound ? 'found' : decoded.collectedBits ? 'partial' : 'missing'} (${decoded.preambleMatches}/${decoded.preambleBits} alternating symbols matched)
-Sync marker: ${decoded.syncStatus}
+Marker: ${decoded.syncStatus}${decoded.syncByte === null || decoded.syncByte === undefined ? '' : ` (${decoded.syncByte === MICROFRAME_DATA_SYNC ? 'data' : decoded.syncByte === MICROFRAME_META_SYNC ? 'META/EOF' : 'unknown'} 0x${decoded.syncByte.toString(16).padStart(2, '0')})`}
+Frame mode: ${decoded.mode}
+Frame type: ${decoded.type}
+${dataLine}${dataLine && metaLine ? '\n' : ''}${metaLine}
+Per-frame check: ${decoded.checkStatus}
 Symbol coverage: ${decoded.collectedBits} / ${decoded.expectedBits} bits (${percent(decoded.coverage)})
 Symbol decision confidence: ${percent(decoded.confidence)}
 Missed symbols: ${decoded.missing.length}${decoded.missing.length ? ` at ${decoded.missing.join(', ')}` : ''}
 Uncertain symbols: ${decoded.uncertain.length}${decoded.uncertain.length ? ` at ${decoded.uncertain.join(', ')}` : ''}
-Byte alignment: ${decoded.byteAlignment}
-Length byte: ${decoded.length === null ? 'missing' : decoded.length}
-Payload bytes: ${decoded.payloadBytes.length} / ${expectedPayloadBytes}
-Checksum byte: ${decoded.checksum === null ? 'missing' : `0x${decoded.checksum.toString(16).padStart(2, '0')}`}
-Checksum/CRC: ${decoded.checksumStatus}${decoded.expectedChecksum === null ? '' : ` (computed 0x${decoded.expectedChecksum.toString(16).padStart(2, '0')})`}
 Final result: ${decoded.finalResult}
 Reason: ${decoded.reason}
+Frame bytes: ${frameHex}
 Bits: ${decoded.groupedBits || '(collecting)'}
-Decoded string: ${decoded.finalResult === 'OK' ? decoded.text : decoded.text ? `Best guess: ${decoded.text}` : '(not decoded)'}
-Diagnostics: expected total ${decoded.expectedBits}, collected total ${decoded.collectedBits}, preamble ${decoded.preambleBits}, sync ${decoded.syncBitsCollected}/${decoded.syncBitsExpected}, length ${decoded.lengthBitsCollected}/${decoded.lengthBitsExpected}, payload ${decoded.payloadBitsCollected}/${decoded.payloadBitsExpected}, checksum ${decoded.checksumBitsCollected}/${decoded.checksumBitsExpected}`;
+Assembled text state: ${microframeRx.lastAssembledText || '(none)'}
+Assembly: ${microframeRx.lastStateLine}`;
 }
 
 function average(values) {
@@ -1545,65 +1885,80 @@ function updatePacketWaiting(now) {
   const mark = Number(els.packetMark.value);
   const space = Number(els.packetSpace.value);
   const progress = packetPreambleProgress(now);
-  packetRxState = progress.state;
+  packetRxState = progress.state.replace('preamble', 'candidate lock');
   updatePacketControlLabels();
-  setPacketLiveStatus(`Packet RX armed
-RX mode: ${isListening ? 'listening' : 'not listening'} → ${progress.state}
-Expected preamble frequencies: mark ${formatFreq(mark)}, space ${formatFreq(space)}
+  setPacketLiveStatus(`Microframe RX armed
+RX mode: ${isListening ? 'listening' : 'not listening'} → ${packetRxState}
+Expected candidate-lock frequencies: mark ${formatFreq(mark)}, space ${formatFreq(space)}
+Frame mode: ${getPacketFrameMode()}
 Current detected peak: ${formatFreq(progress.currentPeak)}
 Carrier confidence: ${percent(progress.carrierConfidence)}
-Alternating pattern progress: ${progress.matches}/${PACKET_PREAMBLE_BITS.length} symbols matched (need ${progress.needed})
-Preamble confidence: ${percent(progress.averageConfidence)}
+Alternating candidate progress: ${progress.matches}/${PACKET_PREAMBLE_BITS.length} symbols matched (need ${progress.needed})
+Candidate-lock confidence: ${percent(progress.averageConfidence)}
 Why not locked: ${progress.reason}
-Raw trace and activity remain live while waiting. Candidate / Packet Log is stable below.`);
+Partial assembly remains visible while waiting; one bad frame does not reset slots.`);
 }
 
 function scanPackets(now) {
   if (now < packetSeenUntil) return;
   const start = findPacketPreamble(now);
   if (!start) { updatePacketWaiting(now); return; }
-  packetRxState = 'receiving';
+  packetRxState = 'receiving microframe';
   updatePacketControlLabels();
-  const decoded = decodePacketFrom(start, now);
-  if (!decoded.complete && decoded.collectedBits < PACKET_PREAMBLE_BITS.length + 4) { updatePacketWaiting(now); return; }
-  packetSeenUntil = now + Number(els.packetSymbol.value) * 8;
+  const decoded = decodeMicroframeFrom(start, now);
+  if (!decoded.complete && decoded.collectedBits < PACKET_PREAMBLE_BITS.length + 8) { updatePacketWaiting(now); return; }
+  packetSeenUntil = now + Number(els.packetSymbol.value) * 3;
   packetRxArmTime = packetSeenUntil;
+  if (decoded.finalResult === 'OK') observeMicroframe(decoded, now);
   const record = addPacketLogRecord(decoded, now);
   const status = decoded.finalResult;
+  const seqLine = decoded.type === 'data' ? `Seq ${decoded.seq}, bytes ${decoded.dataBytes.map(byte => `0x${byte.toString(16).padStart(2, '0')}`).join(' ')} (${decoded.dataBytes.map(byte => sanitizeByteForDisplay(byte)).join('')})` : decoded.type === 'meta' ? `META/EOF length ${decoded.length}, slots ${decoded.totalSlots}, CRC 0x${decoded.crc.toString(16).padStart(4, '0')}` : 'No trusted marker yet';
   setPacketLiveStatus(`${record.label}: ${record.kind}
-Collected ${record.collectedBits}${record.expectedBits === null ? '' : ` / ${record.expectedBits}`} bits
-Sync: ${record.syncStatus}
-Checksum: ${record.checksumStatus}
-Reason: ${record.reason}`);
-  log(status === 'OK' ? 'OK' : status === 'BAD' ? 'BAD' : status === 'NO LOCK' ? 'WARN' : 'WARN', `packet RX ${record.kind}: ${decoded.reason}`);
+${seqLine}
+Per-frame check: ${record.perFrameCheck}
+Reason: ${record.reason}
+Assembly: ${microframeRx.lastStateLine}`);
+  log(status === 'OK' ? 'OK' : status === 'BAD' ? 'WARN' : status === 'NO LOCK' ? 'WARN' : 'WARN', `microframe RX ${record.kind}: ${decoded.reason}`);
 }
 
 function runPacketSelfTest() {
-  const clean = buildPacketBits('HI');
-  const cases = [
-    ['clean bitstream', clean, 'OK'],
-    ['flipped bit', clean.map((bit, index) => index === PACKET_PREAMBLE_BITS.length + 16 ? bit ^ 1 : bit), 'BAD'],
-    ['missing one bit', clean.filter((_, index) => index !== PACKET_PREAMBLE_BITS.length + 12), 'PARTIAL/BAD'],
-    ['truncated checksum byte', clean.slice(0, -8), 'PARTIAL'],
-    ['shifted by one bit', clean.slice(1), 'PARTIAL/BAD']
-  ];
-  const lines = cases.map(([name, bits, expected]) => {
-    const decoded = decodePacketBits(bits, { confidences: bits.map(() => 1) });
-    const pass = expected.includes(decoded.finalResult) || (expected === 'PARTIAL/BAD' && ['PARTIAL', 'BAD'].includes(decoded.finalResult));
+  resetMicroframeAssembly();
+  const mode = getPacketFrameMode();
+  const plan = buildMicroframeCarouselFrames('HELLO WORLD');
+  const cases = [];
+  for (const frame of plan.frames) {
+    const bytes = buildMicroframeBytes(frame, mode);
+    cases.push([frame.type === 'meta' ? 'META/EOF' : `seq ${frame.seq}`, bytes, 'OK']);
+  }
+  if (mode === 'checked') {
+    const bad = buildMicroframeBytes(plan.frames[0], mode);
+    bad[bad.length - 1] ^= 0xff;
+    cases.push(['bad checked frame', bad, 'BAD']);
+  }
+  const lines = cases.map(([name, bytes, expected]) => {
+    const decoded = decodeMicroframeBytes(bytes, mode);
+    if (decoded.finalResult === 'OK') observeMicroframe({ ...decoded, preambleFound: true, preambleMatches: PACKET_PREAMBLE_BITS.length, preambleBits: PACKET_PREAMBLE_BITS.length, collectedBits: bytes.length * 8, expectedBits: bytes.length * 8, coverage: 1, confidence: 1, uncertain: [], missing: [], bits: [], rawFrameBytes: bytes, syncStatus: 'found', mode }, performance.now());
+    const pass = decoded.finalResult === expected;
     return `${pass ? 'PASS' : 'FAIL'} ${name}: expected ${expected}, got ${decoded.finalResult} — ${decoded.reason}`;
   });
-  els.packetOut.textContent = `Packet self-test (no audio)\n${lines.join('\n')}`;
-  log(lines.every(line => line.startsWith('PASS')) ? 'OK' : 'BAD', 'packet no-audio self-test complete');
+  els.packetOut.textContent = `Microframe self-test (no audio)\n${lines.join('\n')}\n\nAssembly: ${microframeRx.lastAssembledText} ${microframeRx.finalCrcOk ? '✅' : ''}\n${microframeRx.lastStateLine}`;
+  log(lines.every(line => line.startsWith('PASS')) ? 'OK' : 'BAD', 'microframe no-audio self-test complete');
 }
 
 function currentPacketSessionSettings() {
   return {
-    packetText: els.packetText.value || 'HELLO WORLD',
+    carouselText: els.packetText.value || 'HELLO WORLD',
     markFrequency: Number(els.packetMark.value),
     spaceFrequency: Number(els.packetSpace.value),
     symbolLengthMs: Number(els.packetSymbol.value),
     detectorIntervalMs: DETECT_INTERVAL_MS,
-    loopIntervalSeconds: Number(els.packetInterval.value),
+    loopGapSeconds: Number(els.packetInterval.value),
+    frameMode: getPacketFrameMode(),
+    dataBytesPerSlot: MICROFRAME_BYTES_PER_SLOT,
+    dataSyncMarker: `0x${MICROFRAME_DATA_SYNC.toString(16).padStart(2, '0')}`,
+    metaEofMarker: `0x${MICROFRAME_META_SYNC.toString(16).padStart(2, '0')}`,
+    assembly: microframeRx.lastStateLine,
+    assembledTextState: microframeRx.lastAssembledText,
     preambleBits: PACKET_PREAMBLE_BITS.length,
     syncByte: `0x${PACKET_SYNC_BYTE.toString(16).padStart(2, '0')}`,
     retainedEntryLimit: PACKET_LOG_LIMIT
@@ -1630,9 +1985,32 @@ function setPacketExportStatus(message, tone = 'ready') {
 }
 
 function exportPacketLogs() {
-  const logText = els.packetOut.textContent;
+  const humanReadable = els.packetOut.textContent;
+  const records = packetLog
+    .filter(record => record.session === packetVisibleLogSession)
+    .map(packetRecordForExport);
+  const exportPayload = {
+    exportedAt: new Date().toISOString(),
+    terminology: {
+      candidateLock: 'preamble-ish detection, not yet trusted',
+      microframe: 'one small seq/data or META/EOF unit',
+      observation: 'heard value for a sequence slot',
+      slot: 'receiver storage position for seq N',
+      metaEof: 'frame carrying length/total slots/whole-message CRC'
+    },
+    settings: currentPacketSessionSettings(),
+    assembly: {
+      textState: microframeRx.lastAssembledText,
+      status: microframeRx.lastStateLine,
+      finalCrcOk: microframeRx.finalCrcOk,
+      meta: microframeRx.meta
+    },
+    humanReadable,
+    records
+  };
+  const logText = `${humanReadable}\n\n--- structured microframe export ---\n${JSON.stringify(exportPayload, null, 2)}`;
   const bytes = byteLength(logText);
-  const filename = `packet-rx-log-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
+  const filename = `microframe-rx-log-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
   els.packetExportJson.value = logText;
   els.packetExportJson.hidden = false;
   els.packetCopyJson.disabled = false;
@@ -1648,7 +2026,7 @@ function exportPacketLogs() {
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 0);
-    log('OK', `export ready: ${bytes} bytes from on-screen packet log`);
+    log('OK', `export ready: ${bytes} bytes from microframe log`);
   } catch (error) {
     log('WARN', `log file download failed; copy log remains available: ${error.message}`);
   }
@@ -1723,11 +2101,13 @@ function attachEvents() {
   });
   els.packetMark.addEventListener('change', () => { packetFreqTouched = true; });
   els.packetSpace.addEventListener('change', () => { packetFreqTouched = true; });
+  els.packetFrameMode.addEventListener('change', () => { resetMicroframeAssembly(); log('OK', `microframe frame mode set to ${getPacketFrameMode()}`); });
+  els.packetText.addEventListener('input', () => { microframeMessageId = (microframeMessageId + 1) & 0xff; });
   els.sendPacket.addEventListener('click', () => sendPacketOnce());
   els.startPacketLoop.addEventListener('click', () => runPacketLoop());
   els.stopPacketLoop.addEventListener('click', () => {
     resetPacketLoopState({ stopAudio: true });
-    log('OK', 'packet loop stopped; TX sequence reset to index 0');
+    log('OK', 'microframe carousel stopped; TX sequence reset to seq 0');
   });
   els.packetSelfTest.addEventListener('click', runPacketSelfTest);
   els.packetExportLogs.addEventListener('click', exportPacketLogs);
@@ -1738,7 +2118,7 @@ function attachEvents() {
       packetRxState = 'idle';
       els.packetRx.classList.remove('active');
       updatePacketControlLabels();
-      log('WARN', 'packet receiver stopped; packet log left visible');
+      log('WARN', 'microframe receiver stopped; microframe log left visible');
       return;
     }
     if (!isListening) {
@@ -1749,9 +2129,9 @@ function attachEvents() {
     packetRxActive = true;
     els.packetRx.classList.add('active');
     resetPacketRxParser({ clearLog: true });
-    setPacketLiveStatus('Packet RX armed; parser fresh and waiting for a new preamble. Trace/activity continue updating.');
+    setPacketLiveStatus('Microframe RX armed; assembly fresh and waiting for a candidate lock. Trace/activity continue updating.');
     updatePacketControlLabels();
-    log('OK', 'packet receiver armed with fresh parser state');
+    log('OK', 'microframe receiver armed with fresh assembly state');
   });
   els.liveBtn.addEventListener('click', () => { liveMode = true; viewOffsetMs = 0; });
   els.traceShell.addEventListener('pointerdown', event => {
