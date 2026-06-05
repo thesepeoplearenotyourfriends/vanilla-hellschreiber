@@ -566,6 +566,7 @@ let packetLogSession = 0;
 let packetVisibleLogSession = 0;
 const PACKET_LOG_LIMIT = 500;
 const PACKET_VISIBLE_LIMIT = 20;
+const PACKET_BODY_OFFSET_CANDIDATES_MS = [0, 25, 50, 75, 100, 125, 150, 175, 200, 225, 250, 300];
 let packetFreqTouched = false;
 let packetRxProgressLast = 0;
 let packetLastMarkerStart = 0;
@@ -1403,8 +1404,9 @@ function decodeMicroframeBytes(bytes, mode = getPacketFrameMode()) {
     const [seq, byte0, byte1] = bytes.slice(1, 4);
     const expectedCheck = (seq ^ byte0 ^ byte1) & 0xff;
     const receivedCheck = checked ? bytes[4] : null;
-    const checkPassed = !checked || receivedCheck === expectedCheck;
-    return { type: 'data', syncByte: sync, seq, dataBytes: [byte0, byte1], expectedCheck, receivedCheck, checkPassed, finalResult: checkPassed ? 'OK' : 'BAD', reason: checkPassed ? 'microframe observation accepted' : 'per-frame check byte failed' };
+    const checkPassed = checked ? receivedCheck === expectedCheck : undefined;
+    const frameOk = !checked || checkPassed;
+    return { type: 'data', syncByte: sync, seq, dataBytes: [byte0, byte1], expectedCheck, receivedCheck, checkPassed, finalResult: frameOk ? 'OK' : 'BAD', reason: frameOk ? 'microframe observation accepted' : 'per-frame check byte failed' };
   }
   if (sync === MICROFRAME_META_SYNC) {
     const needed = checked ? 7 : 6;
@@ -1413,8 +1415,9 @@ function decodeMicroframeBytes(bytes, mode = getPacketFrameMode()) {
     const crc = crcLo | (crcHi << 8);
     const expectedCheck = (messageId ^ length ^ totalSlots ^ crcLo ^ crcHi) & 0xff;
     const receivedCheck = checked ? bytes[6] : null;
-    const checkPassed = !checked || receivedCheck === expectedCheck;
-    return { type: 'meta', syncByte: sync, messageId, length, totalSlots, crc, expectedCheck, receivedCheck, checkPassed, finalResult: checkPassed ? 'OK' : 'BAD', reason: checkPassed ? 'META/EOF accepted' : 'META/EOF check byte failed' };
+    const checkPassed = checked ? receivedCheck === expectedCheck : undefined;
+    const frameOk = !checked || checkPassed;
+    return { type: 'meta', syncByte: sync, messageId, length, totalSlots, crc, expectedCheck, receivedCheck, checkPassed, finalResult: frameOk ? 'OK' : 'BAD', reason: frameOk ? 'META/EOF accepted' : 'META/EOF check byte failed' };
   }
   return { type: 'candidate', syncByte: sync, finalResult: 'BAD', reason: `candidate lock rejected: marker 0x${sync.toString(16).padStart(2, '0')} is not data or META/EOF` };
 }
@@ -1616,23 +1619,26 @@ function setPacketLiveStatus(text) {
 
 function renderPacketLog() {
   const visibleRecords = packetLog
-    .filter(record => record.session === packetVisibleLogSession)
+    .filter(record => record.session === packetVisibleLogSession && !record.exportOnly)
     .slice(0, PACKET_VISIBLE_LIMIT);
   if (!visibleRecords.length) {
     els.packetOut.textContent = 'No candidate or microframe records for this receive run yet.';
     return;
   }
-  const hidden = packetLog.filter(record => record.session === packetVisibleLogSession).length - visibleRecords.length;
+  const hidden = packetLog.filter(record => record.session === packetVisibleLogSession && !record.exportOnly).length - visibleRecords.length;
   const suffix = hidden > 0 ? `\n\nShowing latest ${PACKET_VISIBLE_LIMIT}; ${hidden} older record(s) retained for export.` : '';
   els.packetOut.textContent = visibleRecords.map(record => formatPacketDiagnostic(record.decoded, record.label)).join('\n\n') + suffix;
 }
 
-function addPacketLogRecord(decoded, now) {
-  const record = makePacketLogRecord(decoded, now);
+function retainPacketLogRecord(record, { render = true } = {}) {
   packetLog.unshift(record);
   packetLog = packetLog.slice(0, PACKET_LOG_LIMIT);
-  renderPacketLog();
+  if (render) renderPacketLog();
   return record;
+}
+
+function addPacketLogRecord(decoded, now) {
+  return retainPacketLogRecord(makePacketLogRecord(decoded, now), { render: true });
 }
 
 function classifySymbolWindow(start, end, mark, space) {
@@ -1864,6 +1870,9 @@ function makePacketLogRecord(decoded, now = performance.now()) {
     dataText: decoded.dataBytes ? decoded.dataBytes.map(byte => sanitizeByteForDisplay(byte)).join('') : null,
     repetitionCount: bestObservation?.count ?? null,
     confidence: decoded.confidence,
+    bodyOffsetMs: decoded.bodyOffsetMs ?? null,
+    chosenOffsetMs: decoded.chosenOffsetMs ?? null,
+    chosenOffsetReason: decoded.chosenReason ?? null,
     perFrameCheck: decoded.checkStatus,
     meta: decoded.type === 'meta' ? { messageId: decoded.messageId, length: decoded.length, totalSlots: decoded.totalSlots, crc: decoded.crc } : null,
     finalCrcOk: microframeRx.finalCrcOk,
@@ -1875,6 +1884,7 @@ function makePacketLogRecord(decoded, now = performance.now()) {
     rawFrameBytes: decoded.rawFrameBytes ? decoded.rawFrameBytes.map(byte => `0x${byte.toString(16).padStart(2, '0')}`) : [],
     uncertainSymbols: [...decoded.uncertain],
     missedSymbols: [...decoded.missing],
+    markerDecodeDiagnostics: decoded.markerDecodeDiagnostics ?? null,
     decoded
   };
 }
@@ -1972,14 +1982,14 @@ function findToneMarkerCandidate(now) {
   return { state: 'watching marker tone', reason: 'no usable marker pattern yet', markerFrequency: markerFreq };
 }
 
-function decodeToneDelimitedMicroframe(marker, now = performance.now()) {
+function decodeToneDelimitedMicroframeAtOffset(marker, offsetMs, now = performance.now()) {
   const mark = Number(els.packetMark.value);
   const space = Number(els.packetSpace.value);
   const symbolMs = Number(els.packetSymbol.value);
   const mode = getPacketFrameMode();
   const markerPattern = marker.markerPattern || 'unknown';
   const expectedFrameBytes = markerPattern === 'META' ? (mode === 'checked' ? 6 : 5) : (mode === 'checked' ? 4 : 3);
-  const startTime = marker.markerEnd + PACKET_MARKER_GUARD_MS;
+  const startTime = marker.markerEnd + offsetMs;
   const bits = [];
   const uncertain = [];
   const missing = [];
@@ -1999,7 +2009,114 @@ function decodeToneDelimitedMicroframe(marker, now = performance.now()) {
   const rawFrameBytes = [];
   for (let i = 0; i + 7 < bits.length; i += 8) rawFrameBytes.push(bitsToByte(bits.slice(i, i + 8)));
   const decoded = decodeToneDelimitedFrameBytes(rawFrameBytes, markerPattern, mode);
-  return decorateToneDelimitedDecoded(decoded, { bits, rawFrameBytes, uncertain, missing, confidences, marker, expectedFrameBytes, now, startTime, mode });
+  return decorateToneDelimitedDecoded(decoded, { bits, rawFrameBytes, uncertain, missing, confidences, marker, expectedFrameBytes, now, startTime, mode, offsetMs });
+}
+
+function decodedByteText(bytes) {
+  return bytes?.length ? bytes.map(byte => sanitizeByteForDisplay(byte)).join('') : '';
+}
+
+function plausibilityForToneCandidate(decoded) {
+  if (decoded.finalResult !== 'OK') return 'reject';
+  if (decoded.mode === 'checked' && decoded.checkPassed) return 'strong';
+  if (decoded.type === 'data' && decoded.dataBytes?.every(byte => byte >= 32 && byte <= 126)) return 'strong';
+  if (decoded.type === 'meta' && decoded.length >= 1 && decoded.length <= 255 && decoded.totalSlots >= 1 && decoded.totalSlots <= 128) return 'strong';
+  if (decoded.confidence >= 0.70 && decoded.missing.length === 0) return 'weak';
+  return 'weak';
+}
+
+function expectedCarouselBytesForCandidate(decoded) {
+  if (decoded.type !== 'data' || (els.packetText.value || 'HELLO WORLD') !== 'HELLO WORLD') return null;
+  const plan = buildMicroframePlan('HELLO WORLD');
+  const slot = plan.slots.find(item => item.seq === decoded.seq);
+  return slot ? slot.bytes : null;
+}
+
+function toneCandidateForExport(decoded) {
+  const expectedBytes = expectedCarouselBytesForCandidate(decoded);
+  const dataBytes = decoded.dataBytes ? [...decoded.dataBytes] : null;
+  const expectedText = expectedBytes ? decodedByteText(expectedBytes) : null;
+  return {
+    offsetMs: decoded.bodyOffsetMs,
+    decodedBits: decoded.bits.join(''),
+    groupedBits: decoded.groupedBits,
+    decodedBytes: decoded.rawFrameBytes.map(byte => `0x${byte.toString(16).padStart(2, '0')}`),
+    frameType: decoded.type,
+    seq: decoded.seq ?? null,
+    dataBytes: dataBytes ? dataBytes.map(byte => `0x${byte.toString(16).padStart(2, '0')}`) : null,
+    text: decodedByteText(dataBytes),
+    confidence: decoded.confidence,
+    missingSymbols: [...decoded.missing],
+    uncertainSymbols: [...decoded.uncertain],
+    plausibility: plausibilityForToneCandidate(decoded),
+    bytesLookPlausible: plausibilityForToneCandidate(decoded) === 'strong',
+    mode: decoded.mode,
+    perFrameCheck: decoded.checkStatus,
+    checkPassed: decoded.checkPassed ?? null,
+    finalResult: decoded.finalResult,
+    acceptRejectReason: decoded.reason,
+    expectedCarouselText: expectedText,
+    matchesExpectedCarouselText: expectedBytes ? dataBytes?.every((byte, index) => byte === expectedBytes[index]) ?? false : null
+  };
+}
+
+function chooseToneDelimitedOffset(candidates) {
+  const mode = getPacketFrameMode();
+  const complete = candidates.filter(candidate => candidate.complete);
+  const pool = complete.length ? complete : candidates;
+  const byOffset = pool.find(candidate => candidate.bodyOffsetMs === PACKET_MARKER_GUARD_MS);
+  if (mode === 'checked') {
+    const checkedOk = pool.filter(candidate => candidate.finalResult === 'OK' && candidate.checkPassed);
+    if (checkedOk.length) {
+      return checkedOk.sort((a, b) => (b.confidence - a.confidence) || (a.uncertain.length - b.uncertain.length) || (a.missing.length - b.missing.length))[0];
+    }
+    return byOffset || pool.sort((a, b) => (b.confidence - a.confidence) || (a.bodyOffsetMs - b.bodyOffsetMs))[0];
+  }
+  const plausible = pool.filter(candidate => plausibilityForToneCandidate(candidate) === 'strong');
+  if (plausible.length) {
+    return plausible.sort((a, b) => (b.confidence - a.confidence) || (a.uncertain.length - b.uncertain.length) || (a.missing.length - b.missing.length))[0];
+  }
+  return byOffset || pool.sort((a, b) => (b.confidence - a.confidence) || (a.bodyOffsetMs - b.bodyOffsetMs))[0];
+}
+
+function toneDiagnosticsRecord(marker, candidates, chosen, now) {
+  const timestampDate = new Date(Date.now() - (performance.now() - now));
+  const chosenReason = chosen.mode === 'checked' && chosen.checkPassed
+    ? 'checked-mode per-frame check passed'
+    : plausibilityForToneCandidate(chosen) === 'strong'
+      ? 'printable/plausible bytes with strongest confidence'
+      : chosen.bodyOffsetMs === PACKET_MARKER_GUARD_MS
+        ? 'configured guard-gap offset fallback'
+        : 'highest-confidence available offset fallback';
+  return {
+    kind: 'marker_decode_diagnostics',
+    exportOnly: true,
+    timestamp: timestampDate.toISOString(),
+    session: packetLogSession,
+    markerFrequency: marker.markerFrequency,
+    markerStrength: marker.markerStrength ?? 0,
+    markerDurationSeen: marker.markerDurationSeen ?? 0,
+    markerPattern: marker.markerPattern || 'unknown',
+    markerStartTimestamp: marker.markerStart ? new Date(Date.now() - (performance.now() - marker.markerStart)).toISOString() : null,
+    markerEndTimestamp: marker.markerEnd ? new Date(Date.now() - (performance.now() - marker.markerEnd)).toISOString() : null,
+    configuredGuardGapMs: PACKET_MARKER_GUARD_MS,
+    symbolMs: Number(els.packetSymbol.value),
+    mode: getPacketFrameMode(),
+    offsetCandidates: candidates.map(toneCandidateForExport),
+    chosenOffsetMs: chosen.bodyOffsetMs,
+    chosenReason
+  };
+}
+
+function decodeToneDelimitedMicroframe(marker, now = performance.now()) {
+  const candidates = PACKET_BODY_OFFSET_CANDIDATES_MS.map(offsetMs => decodeToneDelimitedMicroframeAtOffset(marker, offsetMs, now));
+  const chosen = chooseToneDelimitedOffset(candidates);
+  const diagnostics = toneDiagnosticsRecord(marker, candidates, chosen, now);
+  chosen.offsetCandidates = candidates;
+  chosen.chosenOffsetMs = chosen.bodyOffsetMs;
+  chosen.chosenReason = diagnostics.chosenReason;
+  chosen.markerDecodeDiagnostics = diagnostics;
+  return chosen;
 }
 
 function decodeToneDelimitedFrameBytes(bytes, markerPattern, mode = getPacketFrameMode()) {
@@ -2011,20 +2128,22 @@ function decodeToneDelimitedFrameBytes(bytes, markerPattern, mode = getPacketFra
     const crc = crcLo | (crcHi << 8);
     const expectedCheck = (messageId ^ length ^ totalSlots ^ crcLo ^ crcHi) & 0xff;
     const receivedCheck = checked ? bytes[5] : null;
-    const checkPassed = !checked || receivedCheck === expectedCheck;
-    return { type: 'meta', messageId, length, totalSlots, crc, expectedCheck, receivedCheck, checkPassed, finalResult: checkPassed ? 'OK' : 'BAD', reason: checkPassed ? 'META/EOF accepted from tone marker' : 'META/EOF check byte failed' };
+    const checkPassed = checked ? receivedCheck === expectedCheck : undefined;
+    const frameOk = !checked || checkPassed;
+    return { type: 'meta', messageId, length, totalSlots, crc, expectedCheck, receivedCheck, checkPassed, finalResult: frameOk ? 'OK' : 'BAD', reason: frameOk ? 'META/EOF accepted from tone marker' : 'META/EOF check byte failed' };
   }
   const needed = checked ? 4 : 3;
   if (bytes.length < needed) return { type: 'data', finalResult: 'PARTIAL', reason: 'data microframe fields still collecting' };
   const [seq, byte0, byte1] = bytes.slice(0, 3);
   const expectedCheck = (seq ^ byte0 ^ byte1) & 0xff;
   const receivedCheck = checked ? bytes[3] : null;
-  const checkPassed = !checked || receivedCheck === expectedCheck;
-  return { type: 'data', seq, dataBytes: [byte0, byte1], expectedCheck, receivedCheck, checkPassed, finalResult: checkPassed ? 'OK' : 'BAD', reason: checkPassed ? 'microframe observation accepted from tone marker' : 'per-frame check byte failed' };
+  const checkPassed = checked ? receivedCheck === expectedCheck : undefined;
+  const frameOk = !checked || checkPassed;
+  return { type: 'data', seq, dataBytes: [byte0, byte1], expectedCheck, receivedCheck, checkPassed, finalResult: frameOk ? 'OK' : 'BAD', reason: frameOk ? 'microframe observation accepted from tone marker' : 'per-frame check byte failed' };
 }
 
 function decorateToneDelimitedDecoded(decoded, details) {
-  const { bits, rawFrameBytes, uncertain, missing, confidences, marker, expectedFrameBytes, startTime, mode } = details;
+  const { bits, rawFrameBytes, uncertain, missing, confidences, marker, expectedFrameBytes, startTime, mode, offsetMs } = details;
   const expectedBits = expectedFrameBytes * 8;
   return {
     ...decoded,
@@ -2044,6 +2163,7 @@ function decorateToneDelimitedDecoded(decoded, details) {
     markerEnd: marker.markerEnd,
     guardGapMs: PACKET_MARKER_GUARD_MS,
     bodyStart: startTime,
+    bodyOffsetMs: offsetMs ?? null,
     rawFrameBytes,
     expectedBits,
     collectedBits: bits.length,
@@ -2145,13 +2265,19 @@ function scanToneDelimitedPackets(now) {
   packetRxState = marker.markerPattern === 'META' ? 'decoding META/EOF body' : 'decoding DATA body';
   updatePacketControlLabels();
   const decoded = decodeToneDelimitedMicroframe(marker, now);
+  const diagnosticsComplete = decoded.offsetCandidates?.every(candidate => candidate.complete) ?? decoded.complete;
+  if (!diagnosticsComplete) {
+    updateToneMarkerWaiting(now, { ...marker, state: packetRxState, reason: 'collecting body bits for offset diagnostics', decoded });
+    return;
+  }
   if (!decoded.complete) {
     updateToneMarkerWaiting(now, { ...marker, state: packetRxState, reason: decoded.reason, decoded });
     return;
   }
   packetLastMarkerStart = marker.markerStart;
-  packetSeenUntil = marker.markerEnd + PACKET_MARKER_GUARD_MS + decoded.expectedBits * Number(els.packetSymbol.value) + Number(els.packetSymbol.value) * 0.75;
+  packetSeenUntil = marker.markerEnd + (decoded.bodyOffsetMs ?? PACKET_MARKER_GUARD_MS) + decoded.expectedBits * Number(els.packetSymbol.value) + Number(els.packetSymbol.value) * 0.75;
   packetRxArmTime = Math.max(packetRxArmTime, marker.markerEnd);
+  if (decoded.markerDecodeDiagnostics) retainPacketLogRecord(decoded.markerDecodeDiagnostics, { render: false });
   if (decoded.finalResult === 'OK') observeMicroframe(decoded, now);
   const record = addPacketLogRecord(decoded, now);
   const status = decoded.finalResult;
@@ -2249,7 +2375,8 @@ function currentPacketSessionSettings() {
     assembledTextState: microframeRx.lastAssembledText,
     legacyPreambleBits: PACKET_PREAMBLE_BITS.length,
     syncByte: getPacketMarkerMode() === 'legacy' ? `0x${PACKET_SYNC_BYTE.toString(16).padStart(2, '0')}` : null,
-    retainedEntryLimit: PACKET_LOG_LIMIT
+    retainedEntryLimit: PACKET_LOG_LIMIT,
+    bodyOffsetDiagnostics: 'export-only marker-to-body offset candidates retained across receive runs'
   };
 }
 
@@ -2274,9 +2401,7 @@ function setPacketExportStatus(message, tone = 'ready') {
 
 function exportPacketLogs() {
   const humanReadable = els.packetOut.textContent;
-  const records = packetLog
-    .filter(record => record.session === packetVisibleLogSession)
-    .map(packetRecordForExport);
+  const records = packetLog.map(packetRecordForExport);
   const exportPayload = {
     exportedAt: new Date().toISOString(),
     terminology: {
