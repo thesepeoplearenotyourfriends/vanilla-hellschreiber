@@ -65,6 +65,7 @@ python3 hellschreiber.py fontdemo "HELLO 123"
 ```
 
 ## Android APK version
+<img width="288" height="649" alt="image" src="https://github.com/user-attachments/assets/20724d74-265d-49e7-a137-6350f3809c45" />
 
 The `hell-android-apk/` directory contains HellScribe, a small Android app project using only the Android framework. It keeps the same 5x7 Hellschreiber rendering idea and default tone settings, but favors phone workflows over files:
 
