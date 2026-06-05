@@ -388,6 +388,7 @@ let selectedTone = 18000;
 let traceBuffer = [];
 let activity = new Map(BIN_FREQS.map(freq => [freq, 0]));
 let isListening = false;
+let listenStartPending = false;
 let liveMode = true;
 let viewOffsetMs = 0;
 let drag = null;
@@ -455,9 +456,16 @@ function getSyncTxSequence() {
 }
 
 function ensureAudioContext() {
-  audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
-  if (audioCtx.state === 'suspended') audioCtx.resume();
+  const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextCtor) throw new Error('Web Audio is not supported in this browser');
+  audioCtx ||= new AudioContextCtor();
+  if (audioCtx.state === 'suspended') void audioCtx.resume().catch(() => {});
   return audioCtx;
+}
+
+async function resumeAudioContext(ac) {
+  if (ac.state === 'suspended') await ac.resume();
+  return ac;
 }
 
 function formatFreq(freq) {
@@ -625,21 +633,44 @@ async function playSequence(sequence, state, label) {
 }
 
 async function startListening() {
-  const ac = ensureAudioContext();
-  micStream = await navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
-  });
-  analyser = ac.createAnalyser();
-  analyser.fftSize = 4096;
-  analyser.smoothingTimeConstant = 0.15;
-  source = ac.createMediaStreamSource(micStream);
-  source.connect(analyser);
-  isListening = true;
-  els.listen.textContent = 'Stop Listening';
-  log('OK', 'microphone listening started');
+  if (isListening || listenStartPending) return;
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error('microphone capture is not available in this browser/context');
+  }
+  listenStartPending = true;
+  els.listen.disabled = true;
+  els.listen.textContent = 'Starting...';
+  let stream = null;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+    });
+    const ac = await resumeAudioContext(ensureAudioContext());
+    const nextAnalyser = ac.createAnalyser();
+    nextAnalyser.fftSize = 4096;
+    nextAnalyser.smoothingTimeConstant = 0.15;
+    const nextSource = ac.createMediaStreamSource(stream);
+    nextSource.connect(nextAnalyser);
+    micStream = stream;
+    analyser = nextAnalyser;
+    source = nextSource;
+    isListening = true;
+    els.listen.textContent = 'Stop Listening';
+    log('OK', 'microphone listening started');
+  } catch (error) {
+    if (stream) stream.getTracks().forEach(track => track.stop());
+    els.listen.textContent = 'Start Listening';
+    throw error;
+  } finally {
+    listenStartPending = false;
+    els.listen.disabled = false;
+  }
 }
 
 function stopListening() {
+  if (source) {
+    try { source.disconnect(); } catch (_) {}
+  }
   if (micStream) micStream.getTracks().forEach(track => track.stop());
   micStream = null;
   analyser = null;
@@ -799,6 +830,10 @@ function syncPlanWithStates() {
     name: step.name,
     category: step.category,
     symbolMs: step.symbolMs,
+    tones: step.tones,
+    duration: step.duration,
+    gap: step.gap,
+    afterGap: step.afterGap,
     status: syncRxActive ? 'WAITING' : '—',
     score: 0,
     freq: step.tones[0]
