@@ -366,10 +366,10 @@
       <button id="packetExportLogs">Export Logs</button>
     </div>
     <div class="packet-export-tools" aria-live="polite">
-      <textarea id="packetExportJson" aria-label="Exported packet log JSON" readonly hidden></textarea>
+      <textarea id="packetExportJson" aria-label="Exported packet log" readonly hidden></textarea>
       <div class="packet-export-copy-row">
-        <button id="packetCopyJson" type="button" disabled>Copy JSON</button>
-        <span id="packetExportStatus" class="hint">Export JSON will appear here after export.</span>
+        <button id="packetCopyJson" type="button" disabled>Copy Log</button>
+        <span id="packetExportStatus" class="hint">Exported log will appear here after export.</span>
       </div>
     </div>
     <h3>Live Packet RX Status</h3>
@@ -1305,7 +1305,7 @@ function renderPacketLog() {
     return;
   }
   const hidden = packetLog.filter(record => record.session === packetVisibleLogSession).length - visibleRecords.length;
-  const suffix = hidden > 0 ? `\n\nShowing latest ${PACKET_VISIBLE_LIMIT}; ${hidden} older record(s) retained for JSON export.` : '';
+  const suffix = hidden > 0 ? `\n\nShowing latest ${PACKET_VISIBLE_LIMIT}; ${hidden} older record(s) retained for export.` : '';
   els.packetOut.textContent = visibleRecords.map(record => formatPacketDiagnostic(record.decoded, record.label)).join('\n\n') + suffix;
 }
 
@@ -1630,40 +1630,16 @@ function setPacketExportStatus(message, tone = 'ready') {
 }
 
 function exportPacketLogs() {
-  const exportData = {
-    exportedAt: new Date().toISOString(),
-    sessionSettings: currentPacketSessionSettings(),
-    packetText: els.packetText.value || 'HELLO WORLD',
-    markFrequency: Number(els.packetMark.value),
-    spaceFrequency: Number(els.packetSpace.value),
-    symbolLengthMs: Number(els.packetSymbol.value),
-    detectorIntervalMs: DETECT_INTERVAL_MS,
-    activityTotals: Object.fromEntries(activity),
-    currentActivityTotals: Object.fromEntries(activity),
-    currentState: {
-      isListening,
-      packetRxActive,
-      packetRxState,
-      packetLoopActive,
-      packetLoopIndex,
-      currentPeak,
-      currentStrength,
-      txState
-    },
-    recentRxSnapshots: recentRxSnapshots(),
-    candidatePacketLogEntries: packetLog.map(packetRecordForExport)
-  };
-  const json = JSON.stringify(exportData, null, 2);
-  const bytes = byteLength(json);
-  const recordCount = packetLog.length;
-  const filename = `packet-rx-log-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
-  els.packetExportJson.value = json;
+  const logText = els.packetOut.textContent;
+  const bytes = byteLength(logText);
+  const filename = `packet-rx-log-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
+  els.packetExportJson.value = logText;
   els.packetExportJson.hidden = false;
   els.packetCopyJson.disabled = false;
-  setPacketExportStatus(`${bytes} bytes, ${recordCount} record(s)`);
+  setPacketExportStatus(`${bytes} bytes`);
 
   try {
-    const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+    const blob = new Blob([logText], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -1672,33 +1648,33 @@ function exportPacketLogs() {
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 0);
-    log('OK', `export ready: ${bytes} bytes, ${recordCount} packet/candidate log record(s)`);
+    log('OK', `export ready: ${bytes} bytes from on-screen packet log`);
   } catch (error) {
-    log('WARN', `JSON file download failed; copy JSON remains available: ${error.message}`);
+    log('WARN', `log file download failed; copy log remains available: ${error.message}`);
   }
 }
 
 async function copyPacketExportJson() {
-  const json = els.packetExportJson.value;
-  if (!json) {
+  const logText = els.packetExportJson.value;
+  if (!logText) {
     setPacketExportStatus('press Export Logs first', 'error');
     return;
   }
   try {
     if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(json);
+      await navigator.clipboard.writeText(logText);
     } else {
       els.packetExportJson.focus();
       els.packetExportJson.select();
       document.execCommand('copy');
     }
-    setPacketExportStatus(`${byteLength(json)} bytes copied`, 'copied');
-    log('OK', 'copied exported packet JSON to clipboard');
+    setPacketExportStatus(`${byteLength(logText)} bytes copied`, 'copied');
+    log('OK', 'copied exported packet log to clipboard');
   } catch (error) {
     els.packetExportJson.focus();
     els.packetExportJson.select();
-    setPacketExportStatus('copy failed; JSON is selected for manual copy', 'error');
-    log('BAD', `copy JSON failed: ${error.message}`);
+    setPacketExportStatus('copy failed; log is selected for manual copy', 'error');
+    log('BAD', `copy log failed: ${error.message}`);
   }
 }
 
