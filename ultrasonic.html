@@ -360,7 +360,7 @@
 
   <section class="packet-panel" aria-labelledby="packetTitle" data-panel-title="Microframe Carousel FSK">
     <h2 id="packetTitle">Microframe Carousel FSK</h2>
-    <p class="hint">Tone-delimited microframe carousel: a short 14 kHz marker starts each frame, then two-tone FSK body bits carry seq/data or META/EOF fields. RX can join mid-loop and progressively assemble readable text.</p>
+    <p class="hint">Tone-delimited microframe carousel: a short 15 kHz default marker tone starts each frame, then two-tone FSK body bits carry seq/data or META/EOF fields. RX can join mid-loop and progressively assemble readable text.</p>
     <div class="control-row">
       <label>Mark / bit 1
         <select id="packetMark"></select>
@@ -409,6 +409,7 @@
       <button id="packetRx">Receive Mode</button>
       <button id="packetSelfTest">Microframe self-test</button>
       <button id="packetExportLogs">Export Logs</button>
+      <button id="packetClearExportLogs" type="button">Clear Export Logs</button>
     </div>
     <div class="packet-export-tools" aria-live="polite">
       <textarea id="packetExportJson" aria-label="Exported packet log" readonly hidden></textarea>
@@ -453,7 +454,7 @@ const MICROFRAME_META_SYNC = 0x5a;
 const MICROFRAME_BYTES_PER_SLOT = 2;
 const PACKET_SYNC_BYTE = MICROFRAME_DATA_SYNC;
 const PACKET_PREAMBLE_BITS = Array.from({ length: 16 }, (_, index) => index % 2 ? 0 : 1);
-const PACKET_MARKER_DEFAULT_FREQ = 14000;
+const PACKET_MARKER_DEFAULT_FREQ = 15000;
 const PACKET_MARKER_GUARD_MS = 100;
 const PACKET_META_MARKER_PULSE_MS = 150;
 const PACKET_META_MARKER_GAP_MS = 90;
@@ -514,6 +515,7 @@ const els = {
   packetRx: document.getElementById('packetRx'),
   packetSelfTest: document.getElementById('packetSelfTest'),
   packetExportLogs: document.getElementById('packetExportLogs'),
+  packetClearExportLogs: document.getElementById('packetClearExportLogs'),
   packetCopyJson: document.getElementById('packetCopyJson'),
   packetExportJson: document.getElementById('packetExportJson'),
   packetExportStatus: document.getElementById('packetExportStatus'),
@@ -569,6 +571,7 @@ const PACKET_VISIBLE_LIMIT = 20;
 const PACKET_BODY_OFFSET_CANDIDATES_MS = [0, 25, 50, 75, 100, 125, 150, 175, 200, 225, 250, 300];
 let packetFreqTouched = false;
 let packetRxProgressLast = 0;
+let packetLastBodyCollectionDiagnostic = 0;
 let packetLastMarkerStart = 0;
 let microframeMessageId = Math.floor(Math.random() * 256);
 let microframeRx = makeEmptyMicroframeRxState();
@@ -767,6 +770,7 @@ function resetPacketRxParser({ clearLog = false } = {}) {
   packetSeenUntil = 0;
   packetRxArmTime = performance.now();
   packetRxProgressLast = 0;
+  packetLastBodyCollectionDiagnostic = 0;
   packetLastMarkerStart = 0;
   if (clearLog) {
     resetMicroframeAssembly();
@@ -1622,7 +1626,10 @@ function renderPacketLog() {
     .filter(record => record.session === packetVisibleLogSession && !record.exportOnly)
     .slice(0, PACKET_VISIBLE_LIMIT);
   if (!visibleRecords.length) {
-    els.packetOut.textContent = 'No candidate or microframe records for this receive run yet.';
+    const retainedCount = packetLog.length;
+    els.packetOut.textContent = retainedCount
+      ? `No candidate or microframe records for this receive run yet. ${retainedCount} retained export record(s), including older sessions/export-only diagnostics, will still be included by Export Logs.`
+      : 'No candidate or microframe records for this receive run yet.';
     return;
   }
   const hidden = packetLog.filter(record => record.session === packetVisibleLogSession && !record.exportOnly).length - visibleRecords.length;
@@ -1643,11 +1650,15 @@ function addPacketLogRecord(decoded, now) {
 
 function classifySymbolWindow(start, end, mark, space) {
   const samples = traceBuffer.filter(s => s.timestamp >= start && s.timestamp <= end);
-  if (!samples.length) return { bit: null, confidence: 0, markAvg: 0, spaceAvg: 0, samples: 0, missing: true };
+  if (!samples.length) return { bit: null, confidence: 0, markAvg: 0, spaceAvg: 0, sampleCount: 0, samples: 0, missing: true };
   const markAvg = samples.reduce((sum, sample) => sum + Math.min(1, ((sample.meta?.energyMap?.[mark]) || 0) / STRONG_ENERGY), 0) / samples.length;
   const spaceAvg = samples.reduce((sum, sample) => sum + Math.min(1, ((sample.meta?.energyMap?.[space]) || 0) / STRONG_ENERGY), 0) / samples.length;
   const confidence = Math.abs(markAvg - spaceAvg) / Math.max(0.01, markAvg + spaceAvg);
-  return { bit: markAvg >= spaceAvg ? 1 : 0, confidence, markAvg, spaceAvg, samples, missing: false };
+  return { bit: markAvg >= spaceAvg ? 1 : 0, confidence, markAvg, spaceAvg, sampleCount: samples.length, samples: samples.length, missing: false };
+}
+
+function perfTimestampToIso(timestamp) {
+  return timestamp ? new Date(Date.now() - (performance.now() - timestamp)).toISOString() : null;
 }
 
 function decodePacketBits(bits, options = {}) {
@@ -1929,11 +1940,78 @@ function markerStrengthForSample(sample, markerFreq = getPacketMarkerFreq()) {
   return Math.min(1, ((sample.meta?.energyMap?.[markerFreq]) || 0) / STRONG_ENERGY);
 }
 
+function describeToneMarkerRun(run, markerFreq, now) {
+  const durationMs = run.end - run.start + DETECT_INTERVAL_MS;
+  const averageStrength = average(run.strengths);
+  const peakStrength = Math.max(0, ...run.strengths);
+  const acceptedDuration = durationMs >= PACKET_MARKER_MIN_MS;
+  let rejectedReason = null;
+  if (!acceptedDuration) rejectedReason = 'too_short';
+  else if (peakStrength < PACKET_MARKER_THRESHOLD) rejectedReason = 'too_weak';
+  else if (run.start <= packetLastMarkerStart + PACKET_MARKER_SPLIT_MS) rejectedReason = 'split_suppressed';
+  else if (now < run.end + PACKET_MARKER_GUARD_MS) rejectedReason = 'guard_gap_not_elapsed';
+  return {
+    start: perfTimestampToIso(run.start),
+    end: perfTimestampToIso(run.end),
+    durationMs,
+    averageStrength,
+    peakStrength,
+    acceptedDuration,
+    rejectedReason
+  };
+}
+
+function withToneMarkerAcquisitionDiagnostics(base, details) {
+  const { markerFreq, samples, runs, lookbackStart, now } = details;
+  const strongestMarkerStrengthSeen = Math.max(0, ...samples.map(sample => markerStrengthForSample(sample, markerFreq)));
+  return {
+    ...base,
+    markerFrequency: markerFreq,
+    markerThreshold: PACKET_MARKER_THRESHOLD,
+    strongestMarkerStrengthSeen,
+    currentPeak,
+    currentStrength,
+    detectorIntervalMs: DETECT_INTERVAL_MS,
+    configuredMarkerDurationMs: getPacketMarkerDurationMs(),
+    requiredMinimumMarkerDurationMs: PACKET_MARKER_MIN_MS,
+    guardGapMs: PACKET_MARKER_GUARD_MS,
+    lookbackStart: perfTimestampToIso(lookbackStart),
+    now: perfTimestampToIso(now),
+    sampleCount: samples.length,
+    candidateRuns: runs.map(run => describeToneMarkerRun(run, markerFreq, now))
+  };
+}
+
+function markerAcquisitionDiagnosticsRecord(progress, now = performance.now()) {
+  return {
+    kind: 'marker_acquisition_diagnostics',
+    exportOnly: true,
+    timestamp: perfTimestampToIso(now),
+    session: packetLogSession,
+    mode: getPacketFrameMode(),
+    markerFrequency: progress.markerFrequency ?? getPacketMarkerFreq(),
+    markerThreshold: progress.markerThreshold ?? PACKET_MARKER_THRESHOLD,
+    strongestMarkerStrengthSeen: progress.strongestMarkerStrengthSeen ?? progress.markerStrength ?? 0,
+    currentPeak: progress.currentPeak ?? currentPeak,
+    currentStrength: progress.currentStrength ?? currentStrength,
+    detectorIntervalMs: progress.detectorIntervalMs ?? DETECT_INTERVAL_MS,
+    configuredMarkerDurationMs: progress.configuredMarkerDurationMs ?? getPacketMarkerDurationMs(),
+    requiredMinimumMarkerDurationMs: progress.requiredMinimumMarkerDurationMs ?? PACKET_MARKER_MIN_MS,
+    guardGapMs: progress.guardGapMs ?? PACKET_MARKER_GUARD_MS,
+    lookbackStart: progress.lookbackStart ?? null,
+    now: progress.now ?? perfTimestampToIso(now),
+    sampleCount: progress.sampleCount ?? 0,
+    candidateRuns: progress.candidateRuns ?? [],
+    state: progress.state || packetRxState,
+    reason: progress.reason || 'waiting for a complete frame marker pulse'
+  };
+}
+
 function findToneMarkerCandidate(now) {
   const markerFreq = getPacketMarkerFreq();
   const lookbackStart = Math.max(packetRxArmTime, packetSeenUntil, now - 6000);
   const samples = traceBuffer.filter(sample => sample.timestamp >= lookbackStart && sample.timestamp <= now);
-  if (!samples.length) return { state: 'watching marker tone', reason: 'no recent detector samples', markerFrequency: markerFreq };
+  if (!samples.length) return withToneMarkerAcquisitionDiagnostics({ state: 'watching marker tone', reason: 'no recent detector samples' }, { markerFreq, samples, runs: [], lookbackStart, now });
   const runs = [];
   let run = null;
   for (const sample of samples) {
@@ -1956,9 +2034,10 @@ function findToneMarkerCandidate(now) {
   const completeRuns = runs
     .map(item => ({ ...item, duration: item.end - item.start + DETECT_INTERVAL_MS, strength: average(item.strengths) }))
     .filter(item => item.duration >= PACKET_MARKER_MIN_MS && item.start > packetLastMarkerStart + PACKET_MARKER_SPLIT_MS);
+  const details = { markerFreq, samples, runs, lookbackStart, now };
   if (!completeRuns.length) {
     const bestStrength = Math.max(0, ...samples.map(sample => markerStrengthForSample(sample, markerFreq)));
-    return { state: bestStrength >= PACKET_MARKER_THRESHOLD ? 'marker tone rising' : 'watching marker tone', reason: 'waiting for a complete frame marker pulse', markerFrequency: markerFreq, markerStrength: bestStrength };
+    return withToneMarkerAcquisitionDiagnostics({ state: bestStrength >= PACKET_MARKER_THRESHOLD ? 'marker tone rising' : 'watching marker tone', reason: 'waiting for a complete frame marker pulse', markerStrength: bestStrength }, details);
   }
   for (let index = 0; index < completeRuns.length; index++) {
     const first = completeRuns[index];
@@ -1967,19 +2046,19 @@ function findToneMarkerCandidate(now) {
       const gap = second.start - first.end;
       if (gap >= 45 && gap <= PACKET_MARKER_META_MAX_GAP_MS) {
         const markerEnd = second.end;
-        if (now < markerEnd + PACKET_MARKER_GUARD_MS) return { state: 'META/EOF marker acquired', reason: 'waiting through guard gap', markerFrequency: markerFreq, markerStart: first.start, markerEnd, markerPattern: 'META', markerStrength: average([first.strength, second.strength]), markerDurationSeen: (first.end - first.start) + (second.end - second.start) + gap };
-        return { markerFrequency: markerFreq, markerStart: first.start, markerEnd, markerPattern: 'META', markerStrength: average([first.strength, second.strength]), markerDurationSeen: (first.end - first.start) + (second.end - second.start) + gap, guardGapMs: PACKET_MARKER_GUARD_MS, accepted: true, reason: 'two-pulse META/EOF marker acquired' };
+        if (now < markerEnd + PACKET_MARKER_GUARD_MS) return withToneMarkerAcquisitionDiagnostics({ state: 'META/EOF marker acquired', reason: 'guard_gap_not_elapsed', markerStart: first.start, markerEnd, markerPattern: 'META', markerStrength: average([first.strength, second.strength]), markerDurationSeen: (first.end - first.start) + (second.end - second.start) + gap }, details);
+        return withToneMarkerAcquisitionDiagnostics({ markerStart: first.start, markerEnd, markerPattern: 'META', markerStrength: average([first.strength, second.strength]), markerDurationSeen: (first.end - first.start) + (second.end - second.start) + gap, guardGapMs: PACKET_MARKER_GUARD_MS, accepted: true, reason: 'two-pulse META/EOF marker acquired' }, details);
       }
     }
     if (now < first.end + PACKET_MARKER_META_MAX_GAP_MS) {
-      return { state: 'DATA marker acquired', reason: 'waiting briefly to rule out second META/EOF pulse', markerFrequency: markerFreq, markerStart: first.start, markerEnd: first.end, markerPattern: 'unknown', markerStrength: first.strength, markerDurationSeen: first.duration };
+      return withToneMarkerAcquisitionDiagnostics({ state: 'DATA marker acquired', reason: 'waiting_meta_second_pulse', markerStart: first.start, markerEnd: first.end, markerPattern: 'unknown', markerStrength: first.strength, markerDurationSeen: first.duration }, details);
     }
     if (now < first.end + PACKET_MARKER_GUARD_MS) {
-      return { state: 'DATA marker acquired', reason: 'waiting through guard gap', markerFrequency: markerFreq, markerStart: first.start, markerEnd: first.end, markerPattern: 'DATA', markerStrength: first.strength, markerDurationSeen: first.duration };
+      return withToneMarkerAcquisitionDiagnostics({ state: 'DATA marker acquired', reason: 'guard_gap_not_elapsed', markerStart: first.start, markerEnd: first.end, markerPattern: 'DATA', markerStrength: first.strength, markerDurationSeen: first.duration }, details);
     }
-    return { markerFrequency: markerFreq, markerStart: first.start, markerEnd: first.end, markerPattern: 'DATA', markerStrength: first.strength, markerDurationSeen: first.duration, guardGapMs: PACKET_MARKER_GUARD_MS, accepted: true, reason: 'single-pulse DATA marker acquired' };
+    return withToneMarkerAcquisitionDiagnostics({ markerStart: first.start, markerEnd: first.end, markerPattern: 'DATA', markerStrength: first.strength, markerDurationSeen: first.duration, guardGapMs: PACKET_MARKER_GUARD_MS, accepted: true, reason: 'single-pulse DATA marker acquired' }, details);
   }
-  return { state: 'watching marker tone', reason: 'no usable marker pattern yet', markerFrequency: markerFreq };
+  return withToneMarkerAcquisitionDiagnostics({ state: 'watching marker tone', reason: 'no usable marker pattern yet' }, details);
 }
 
 function decodeToneDelimitedMicroframeAtOffset(marker, offsetMs, now = performance.now()) {
@@ -1994,6 +2073,7 @@ function decodeToneDelimitedMicroframeAtOffset(marker, offsetMs, now = performan
   const uncertain = [];
   const missing = [];
   const confidences = [];
+  const symbols = [];
   for (let index = 0; index < expectedFrameBytes * 8; index++) {
     const guard = symbolGuardMs(symbolMs);
     const start = startTime + index * symbolMs + guard;
@@ -2001,15 +2081,30 @@ function decodeToneDelimitedMicroframeAtOffset(marker, offsetMs, now = performan
     if (now < end) break;
     const classified = classifySymbolWindow(start, end, mark, space);
     const position = index + 1;
+    const isUncertain = !classified.missing && (classified.confidence < 0.18 || Math.max(classified.markAvg, classified.spaceAvg) < 0.10);
+    symbols.push({
+      index: position,
+      start: perfTimestampToIso(start),
+      end: perfTimestampToIso(end),
+      markFrequency: mark,
+      spaceFrequency: space,
+      markAvg: classified.markAvg,
+      spaceAvg: classified.spaceAvg,
+      chosenBit: classified.bit,
+      confidence: classified.confidence,
+      missing: Boolean(classified.missing),
+      uncertain: Boolean(isUncertain),
+      sampleCount: classified.sampleCount ?? classified.samples ?? 0
+    });
     if (classified.missing) { missing.push(position); break; }
     bits.push(classified.bit);
     confidences.push(classified.confidence);
-    if (classified.confidence < 0.18 || Math.max(classified.markAvg, classified.spaceAvg) < 0.10) uncertain.push(position);
+    if (isUncertain) uncertain.push(position);
   }
   const rawFrameBytes = [];
   for (let i = 0; i + 7 < bits.length; i += 8) rawFrameBytes.push(bitsToByte(bits.slice(i, i + 8)));
   const decoded = decodeToneDelimitedFrameBytes(rawFrameBytes, markerPattern, mode);
-  return decorateToneDelimitedDecoded(decoded, { bits, rawFrameBytes, uncertain, missing, confidences, marker, expectedFrameBytes, now, startTime, mode, offsetMs });
+  return decorateToneDelimitedDecoded(decoded, { bits, rawFrameBytes, uncertain, missing, confidences, symbols, marker, expectedFrameBytes, now, startTime, mode, offsetMs });
 }
 
 function decodedByteText(bytes) {
@@ -2038,6 +2133,7 @@ function toneCandidateForExport(decoded) {
   const expectedText = expectedBytes ? decodedByteText(expectedBytes) : null;
   return {
     offsetMs: decoded.bodyOffsetMs,
+    bodyStartTimestamp: decoded.bodyStartTimestamp ?? perfTimestampToIso(decoded.bodyStart),
     decodedBits: decoded.bits.join(''),
     groupedBits: decoded.groupedBits,
     decodedBytes: decoded.rawFrameBytes.map(byte => `0x${byte.toString(16).padStart(2, '0')}`),
@@ -2055,7 +2151,9 @@ function toneCandidateForExport(decoded) {
     checkPassed: decoded.checkPassed ?? null,
     finalResult: decoded.finalResult,
     acceptRejectReason: decoded.reason,
+    expectedCarouselBytes: expectedBytes ? expectedBytes.map(byte => `0x${byte.toString(16).padStart(2, '0')}`) : null,
     expectedCarouselText: expectedText,
+    symbols: decoded.symbols ?? [],
     matchesExpectedCarouselText: expectedBytes ? dataBytes?.every((byte, index) => byte === expectedBytes[index]) ?? false : null
   };
 }
@@ -2077,6 +2175,47 @@ function chooseToneDelimitedOffset(candidates) {
     return plausible.sort((a, b) => (b.confidence - a.confidence) || (a.uncertain.length - b.uncertain.length) || (a.missing.length - b.missing.length))[0];
   }
   return byOffset || pool.sort((a, b) => (b.confidence - a.confidence) || (a.bodyOffsetMs - b.bodyOffsetMs))[0];
+}
+
+function toneBodyCollectionDiagnosticsRecord(marker, decoded, now = performance.now()) {
+  const candidates = decoded?.offsetCandidates ?? [];
+  const expectedBits = Math.max(0, ...candidates.map(candidate => candidate.expectedBits ?? 0), decoded?.expectedBits ?? 0);
+  const maxCollectedBits = Math.max(0, ...candidates.map(candidate => candidate.collectedBits ?? 0), decoded?.collectedBits ?? 0);
+  const missingSampleCandidates = candidates.filter(candidate => candidate.missing?.length).map(candidate => ({
+    offsetMs: candidate.bodyOffsetMs,
+    missingSymbols: [...candidate.missing],
+    collectedBits: candidate.collectedBits,
+    expectedBits: candidate.expectedBits,
+    reason: candidate.reason
+  }));
+  const latestCandidateEnd = candidates.length
+    ? Math.max(...candidates.map(candidate => (candidate.bodyStart ?? 0) + (candidate.expectedBits ?? 0) * Number(els.packetSymbol.value)))
+    : null;
+  let reason = decoded?.reason || 'body bits still collecting';
+  if (latestCandidateEnd && now < latestCandidateEnd) reason = 'waiting for longest checked-mode candidate to finish';
+  else if (missingSampleCandidates.length) reason = 'missing samples or symbols in all offset candidates';
+  else if (maxCollectedBits < expectedBits) reason = 'not enough elapsed time for complete body';
+  return {
+    kind: 'body_collection_diagnostics',
+    exportOnly: true,
+    timestamp: perfTimestampToIso(now),
+    session: packetLogSession,
+    mode: getPacketFrameMode(),
+    markerFrequency: marker.markerFrequency,
+    markerPattern: marker.markerPattern || 'unknown',
+    markerStartTimestamp: perfTimestampToIso(marker.markerStart),
+    markerEndTimestamp: perfTimestampToIso(marker.markerEnd),
+    configuredGuardGapMs: PACKET_MARKER_GUARD_MS,
+    symbolMs: Number(els.packetSymbol.value),
+    expectedBits,
+    maxCollectedBits,
+    waitingForLongestCandidateUntil: perfTimestampToIso(latestCandidateEnd),
+    notEnoughElapsedTime: Boolean(latestCandidateEnd && now < latestCandidateEnd),
+    missingSampleCandidates,
+    offsetCandidates: candidates.map(toneCandidateForExport),
+    state: packetRxState,
+    reason
+  };
 }
 
 function toneDiagnosticsRecord(marker, candidates, chosen, now) {
@@ -2143,7 +2282,7 @@ function decodeToneDelimitedFrameBytes(bytes, markerPattern, mode = getPacketFra
 }
 
 function decorateToneDelimitedDecoded(decoded, details) {
-  const { bits, rawFrameBytes, uncertain, missing, confidences, marker, expectedFrameBytes, startTime, mode, offsetMs } = details;
+  const { bits, rawFrameBytes, uncertain, missing, confidences, symbols = [], marker, expectedFrameBytes, startTime, mode, offsetMs } = details;
   const expectedBits = expectedFrameBytes * 8;
   return {
     ...decoded,
@@ -2163,6 +2302,7 @@ function decorateToneDelimitedDecoded(decoded, details) {
     markerEnd: marker.markerEnd,
     guardGapMs: PACKET_MARKER_GUARD_MS,
     bodyStart: startTime,
+    bodyStartTimestamp: perfTimestampToIso(startTime),
     bodyOffsetMs: offsetMs ?? null,
     rawFrameBytes,
     expectedBits,
@@ -2171,6 +2311,7 @@ function decorateToneDelimitedDecoded(decoded, details) {
     expectedFrameBytes,
     coverage: bits.length / Math.max(1, expectedBits),
     confidence: average(confidences),
+    symbols,
     uncertain,
     missing,
     complete: rawFrameBytes.length >= expectedFrameBytes,
@@ -2316,6 +2457,13 @@ Assembly: ${microframeRx.lastStateLine}`);
 function updateToneMarkerWaiting(now, progress = {}) {
   if (now - packetRxProgressLast < 500) return;
   packetRxProgressLast = now;
+  if (getPacketMarkerMode() === 'tone' && !progress.accepted && !progress.decoded) {
+    retainPacketLogRecord(markerAcquisitionDiagnosticsRecord(progress, now), { render: false });
+  }
+  if (progress.decoded && progress.markerStart && now - packetLastBodyCollectionDiagnostic >= 500) {
+    packetLastBodyCollectionDiagnostic = now;
+    retainPacketLogRecord(toneBodyCollectionDiagnosticsRecord(progress, progress.decoded, now), { render: false });
+  }
   const mark = Number(els.packetMark.value);
   const space = Number(els.packetSpace.value);
   packetRxState = progress.state || 'watching marker tone';
@@ -2399,14 +2547,29 @@ function setPacketExportStatus(message, tone = 'ready') {
   els.packetExportStatus.textContent = `${prefix}: ${message}`;
 }
 
+function clearExportPacketLogs() {
+  packetLog = [];
+  renderPacketLog();
+  els.packetExportJson.value = '';
+  els.packetExportJson.hidden = true;
+  els.packetCopyJson.disabled = true;
+  setPacketExportStatus('retained export records cleared; current visible session remains active');
+  log('WARN', 'retained microframe export log cleared by user');
+}
+
 function exportPacketLogs() {
   const humanReadable = els.packetOut.textContent;
+  const currentVisibleRecords = packetLog.filter(record => record.session === packetVisibleLogSession && !record.exportOnly);
   const records = packetLog.map(packetRecordForExport);
   const exportPayload = {
     exportedAt: new Date().toISOString(),
+    currentVisibleRecordCount: currentVisibleRecords.length,
+    retainedExportRecordCount: packetLog.length,
+    currentVisibleSession: packetVisibleLogSession,
+    note: 'Visible/current-run records are session-filtered and omit export-only diagnostics. Retained export records persist across stop/start/mode/frequency changes until Clear Export Logs, are capped at 500, and may include older sessions plus export-only diagnostics.',
     terminology: {
       candidateLock: 'legacy preamble-ish detection, not yet trusted',
-      markerAcquisition: '14 kHz out-of-band event that starts a tone-delimited microframe',
+      markerAcquisition: 'selected/default 15 kHz out-of-band event that starts a tone-delimited microframe',
       microframe: 'one small seq/data or META/EOF unit',
       observation: 'heard value for a sequence slot',
       slot: 'receiver storage position for seq N',
@@ -2518,7 +2681,7 @@ function attachEvents() {
   els.packetMarkerFreq.addEventListener('change', () => { packetFreqTouched = true; resetPacketRxParser(); log('OK', `frame marker frequency set to ${formatFreq(getPacketMarkerFreq())}`); });
   els.packetMarkerDuration.addEventListener('change', () => { log('OK', `frame marker duration set to ${getPacketMarkerDurationMs()} ms`); });
   els.packetMarkerMode.addEventListener('change', () => { resetPacketRxParser({ clearLog: packetRxActive }); log('OK', `microframe marker mode set to ${getPacketMarkerMode()}`); updatePacketControlLabels(); });
-  els.packetFrameMode.addEventListener('change', () => { resetMicroframeAssembly(); log('OK', `microframe frame mode set to ${getPacketFrameMode()}`); });
+  els.packetFrameMode.addEventListener('change', () => { resetMicroframeAssembly(); resetPacketRxParser({ clearLog: packetRxActive }); log('OK', `microframe frame mode set to ${getPacketFrameMode()}`); });
   els.packetText.addEventListener('input', () => { microframeMessageId = (microframeMessageId + 1) & 0xff; });
   els.sendPacket.addEventListener('click', () => sendPacketOnce());
   els.startPacketLoop.addEventListener('click', () => runPacketLoop());
@@ -2528,6 +2691,7 @@ function attachEvents() {
   });
   els.packetSelfTest.addEventListener('click', runPacketSelfTest);
   els.packetExportLogs.addEventListener('click', exportPacketLogs);
+  els.packetClearExportLogs.addEventListener('click', clearExportPacketLogs);
   els.packetCopyJson.addEventListener('click', copyPacketExportJson);
   els.packetRx.addEventListener('click', async () => {
     if (packetRxActive) {
@@ -2546,7 +2710,7 @@ function attachEvents() {
     packetRxActive = true;
     els.packetRx.classList.add('active');
     resetPacketRxParser({ clearLog: true });
-    setPacketLiveStatus('Microframe RX armed; assembly fresh and watching for 14 kHz tone-delimited frame markers. Trace/activity continue updating.');
+    setPacketLiveStatus('Microframe RX armed; assembly fresh and watching for 15 kHz default tone-delimited frame markers. Trace/activity continue updating.');
     updatePacketControlLabels();
     log('OK', 'microframe receiver armed with fresh assembly state');
   });
