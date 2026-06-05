@@ -1439,6 +1439,10 @@ function observeMicroframe(decoded, now = performance.now()) {
     return { observation: 'meta' };
   }
   if (decoded.type !== 'data') return null;
+  const expectedSlots = microframeRx.meta?.totalSlots ?? buildMicroframePlan().totalSlots;
+  if (decoded.seq < 0 || decoded.seq >= expectedSlots) {
+    return { observation: 'out_of_range_seq', reason: `seq ${decoded.seq} outside expected 0..${expectedSlots - 1}` };
+  }
   const key = decoded.dataBytes.join(',');
   const slot = microframeRx.slots.get(decoded.seq) || { choices: new Map(), firstSeen: now, lastSeen: now };
   const entry = slot.choices.get(key) || { bytes: decoded.dataBytes, count: 0, firstSeen: now, lastSeen: now };
@@ -1892,28 +1896,36 @@ function expectedDataBytesForSeq(seq) {
   return buildMicroframePlan().slots.find(slot => slot.seq === seq)?.bytes ?? [];
 }
 
+function expectedSeq0FrameBytes() {
+  const slot = buildMicroframePlan().slots.find(slot => slot.seq === 0);
+  return [0, ...(slot?.bytes ?? [])];
+}
+
 function compactOffsetSweep(decoded) {
   if (decoded.compactOffsetSweep !== undefined) return decoded.compactOffsetSweep;
-  if (decoded.delimiterMode !== 'tone' || decoded.type !== 'data' || decoded.seq !== 0 || decoded.finalResult !== 'BAD' || packetBadSeq0SweepDone) return '';
+  if (decoded.delimiterMode !== 'tone' || decoded.type !== 'data' || packetBadSeq0SweepDone || !decoded.markerEnd) return '';
   packetBadSeq0SweepDone = true;
   const symbolMs = Number(els.packetSymbol.value);
   const mark = Number(els.packetMark.value);
   const space = Number(els.packetSpace.value);
-  const lines = ['offsets:'];
+  const expected = expectedSeq0FrameBytes();
+  const lines = [`OFFSET_SWEEP_EXPECTED_SEQ0 expected=${compactBytes(expected)}`];
   for (let offset = 0; offset <= 300; offset += 25) {
     const bits = [];
+    const bitLabels = [];
     const confidences = [];
-    const startTime = decoded.markerEnd + PACKET_MARKER_GUARD_MS + offset;
+    const startTime = decoded.markerEnd + offset;
     for (let index = 0; index < 24; index++) {
       const guard = symbolGuardMs(symbolMs);
       const classified = classifySymbolWindow(startTime + index * symbolMs + guard, startTime + (index + 1) * symbolMs - guard, mark, space);
-      if (classified.missing) break;
-      bits.push(classified.bit);
+      bits.push(classified.bit ? 1 : 0);
+      bitLabels.push(classified.missing ? '·' : String(classified.bit));
       confidences.push(classified.confidence);
     }
     const bytes = [];
     for (let i = 0; i + 7 < bits.length; i += 8) bytes.push(bitsToByte(bits.slice(i, i + 8)));
-    lines.push(`${offset}: bytes=${compactBytes(bytes)} bits=${bits.join('')} conf=${compactRatio(average(confidences))}`);
+    const match = bytes.length === expected.length && bytes.every((byte, index) => byte === expected[index]);
+    lines.push(`${offset}ms bytes=${compactBytes(bytes)} bits=${bitLabels.join('')} conf=${compactRatio(average(confidences))} match=${match ? 'yes' : 'no'}`);
   }
   decoded.compactOffsetSweep = `\n${lines.join('\n')}`;
   return decoded.compactOffsetSweep;
@@ -1921,7 +1933,7 @@ function compactOffsetSweep(decoded) {
 
 function formatPacketDiagnostic(decoded, label = 'Decode candidate') {
   const prefix = decoded.type === 'meta' ? 'META' : decoded.type === 'data' ? 'DATA' : label;
-  const common = `marker=${Math.round(decoded.markerFrequency || getPacketMarkerFreq())} strength=${compactRatio(decoded.markerStrength)} dur=${Math.round(decoded.markerDurationSeen || 0)}ms off=${Math.round(decoded.guardGapMs ?? PACKET_MARKER_GUARD_MS)}`;
+  const common = `marker=${Math.round(decoded.markerFrequency || getPacketMarkerFreq())} strength=${compactRatio(decoded.markerStrength)} dur=${Math.round(decoded.markerDurationSeen || 0)}ms guard=${Math.round(decoded.guardGapMs ?? PACKET_MARKER_GUARD_MS)}`;
   if (decoded.type === 'meta') return `${prefix} ${common} len=${decoded.length} slots=${decoded.totalSlots} crc=${decoded.crc.toString(16).padStart(4, '0')}`;
   if (decoded.type === 'data') {
     const expected = expectedDataBytesForSeq(decoded.seq);
