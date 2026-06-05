@@ -119,3 +119,19 @@ The browser receiver uses `AudioContext.decodeAudioData` for the first-pass WAV 
 - The receiver is visual only; you read the rendered strip yourself.
 - The simple tone detector is intentionally boring and understandable rather than highly optimized.
 - Browser audio playback may require a user gesture, which the `Play` button provides.
+
+## Ultrasonic Playground
+
+The repository now includes `ultrasonic.html`, a second browser-only page linked from `index.html`. It is a calm high-frequency audio instrument panel for early speaker-to-microphone experiments rather than a complete modem.
+
+What is implemented:
+
+- Fixed tone transmit buttons for `14 kHz`, `15 kHz`, `16 kHz`, `17 kHz`, `18 kHz`, and `19 kHz`.
+- Duration and volume controls, plus Play Tone, Play Sweep, Play Pattern, and Sync TX actions.
+- Microphone listening with requested browser constraints of `echoCancellation: false`, `noiseSuppression: false`, and `autoGainControl: false`.
+- A single primary canvas visualization: a left-to-right rolling frequency trace where vertical position is detected peak frequency and line thickness/opacity reflects signal strength.
+- A rolling trace buffer so the user can drag backward through recent history while new samples continue to be collected. The Live button snaps the trace back to live scrolling.
+- One compact secondary display for recent aggregate activity by frequency from roughly `14 kHz` through `20 kHz`.
+- Sync TX/RX scaffolding with a shared test sequence, pass/weak/fail result rows, and a recommended mark/space/symbol profile.
+
+The detector intentionally focuses on a small set of high-frequency bins using a pure-JavaScript Goertzel calculation. This keeps the playground readable and useful for manual lab work before any future two-tone FSK or packet modem work begins.
