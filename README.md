@@ -81,6 +81,7 @@ Build it with the repository maintainer's no-Gradle shell script by passing the 
 ```sh
 /path/to/your/build-apk.sh hell-android-apk
 ```
+Its also already compiled and in the hell-android-apk dir.
 
 ## Browser JavaScript version
 
