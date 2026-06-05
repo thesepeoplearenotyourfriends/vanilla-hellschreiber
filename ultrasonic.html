@@ -338,7 +338,7 @@
       <button id="sendPacket" class="primary">Send Packet</button>
       <button id="startPacketLoop">Start Loop</button>
       <button id="stopPacketLoop">Stop Loop</button>
-      <button id="packetRx">Receive Packet</button>
+      <button id="packetRx">Receive Mode</button>
       <button id="packetSelfTest">Packet self-test</button>
     </div>
     <div class="packet-output" id="packetOut">Packet RX idle.</div>
@@ -440,6 +440,7 @@ let modeLabel = 'idle';
 let txState = TX_STATES.IDLE;
 let txGeneration = 0;
 let txActiveNodes = [];
+let txTimeouts = new Map();
 let syncRxActive = false;
 let syncRxState = 'idle';
 let syncArmTime = 0;
@@ -448,9 +449,13 @@ let syncResults = [];
 let lastDetectionMeta = null;
 let packetLoopTimer = null;
 let packetLoopActive = false;
+let packetLoopSession = 0;
+let packetLoopIndex = 0;
 let packetRxActive = false;
+let packetRxState = 'idle';
 let packetRxAttempt = 0;
 let packetSeenUntil = 0;
+let packetRxArmTime = 0;
 let packetLog = [];
 let packetFreqTouched = false;
 let packetRxProgressLast = 0;
@@ -616,8 +621,45 @@ function setTxState(state, label = state) {
   modeLabel = state === TX_STATES.IDLE ? 'idle' : label;
 }
 
+
+function updatePacketControlLabels() {
+  els.startPacketLoop.textContent = 'Start Loop';
+  els.startPacketLoop.title = packetLoopActive ? `TX loop running; sequence index ${packetLoopIndex}` : 'TX loop stopped; next start begins at index 0';
+  els.stopPacketLoop.textContent = 'Stop Loop';
+  els.stopPacketLoop.title = 'Stop TX and reset the packet loop sequence to index 0';
+  els.packetRx.textContent = packetRxActive ? 'Receive Mode On' : 'Receive Mode';
+  els.packetRx.title = packetRxActive ? `RX parser ${packetRxState}` : 'Start receive mode with a fresh parser';
+}
+
+function clearPacketLoopTimer() {
+  if (packetLoopTimer) {
+    clearTimeout(packetLoopTimer.id);
+    packetLoopTimer.resolve?.();
+  }
+  packetLoopTimer = null;
+}
+
+function resetPacketLoopState({ stopAudio = false } = {}) {
+  packetLoopActive = false;
+  packetLoopSession += 1;
+  packetLoopIndex = 0;
+  clearPacketLoopTimer();
+  if (stopAudio) stopTx();
+  updatePacketControlLabels();
+}
+
+function resetPacketRxParser({ clearLog = false } = {}) {
+  packetRxState = 'waiting preamble';
+  packetRxAttempt = 0;
+  packetSeenUntil = 0;
+  packetRxArmTime = performance.now();
+  packetRxProgressLast = 0;
+  if (clearLog) packetLog = [];
+}
+
 function stopTx(fadeMs = FADE_MS) {
   txGeneration += 1;
+  clearTxTimeouts();
   const hadNodes = txActiveNodes.length > 0;
   const ac = audioCtx;
   if (ac) {
@@ -649,6 +691,22 @@ function registerTxNode(osc, gain) {
   };
 }
 
+function scheduleTxTimeout(resolve, ms) {
+  const id = setTimeout(() => {
+    txTimeouts.delete(id);
+    resolve(true);
+  }, ms);
+  txTimeouts.set(id, resolve);
+}
+
+function clearTxTimeouts() {
+  for (const [id, resolve] of txTimeouts.entries()) {
+    clearTimeout(id);
+    resolve(false);
+  }
+  txTimeouts.clear();
+}
+
 function scheduleToneSegment(freq, durationMs, token, label) {
   return new Promise(resolve => {
     if (token !== txGeneration) { resolve(false); return; }
@@ -669,7 +727,7 @@ function scheduleToneSegment(freq, durationMs, token, label) {
     osc.start(now);
     osc.stop(now + duration + 0.025);
     modeLabel = label;
-    setTimeout(() => resolve(token === txGeneration), durationMs + FADE_MS + 25);
+    scheduleTxTimeout(completed => resolve(completed && token === txGeneration), durationMs + FADE_MS + 25);
   });
 }
 
@@ -688,7 +746,11 @@ async function playTone(freq, durationMs, label = 'manual tone') {
 
 function sleep(ms, token) {
   return new Promise(resolve => {
-    setTimeout(() => resolve(token === undefined || token === txGeneration), ms);
+    if (token === undefined) {
+      setTimeout(() => resolve(true), ms);
+      return;
+    }
+    scheduleTxTimeout(completed => resolve(completed && token === txGeneration), ms);
   });
 }
 
@@ -1140,7 +1202,8 @@ function applyBestPacketDefaults() {
   }
 }
 
-async function sendPacketOnce() {
+async function sendPacketOnce({ fromLoop = false } = {}) {
+  if (!fromLoop) resetPacketLoopState();
   applyBestPacketDefaults();
   const mark = Number(els.packetMark.value);
   const space = Number(els.packetSpace.value);
@@ -1157,14 +1220,29 @@ async function sendPacketOnce() {
 
 async function runPacketLoop() {
   if (packetLoopActive) return;
+  resetPacketLoopState();
   packetLoopActive = true;
-  log('OK', `packet loop started every ${els.packetInterval.value}s`);
-  while (packetLoopActive) {
-    await sendPacketOnce();
-    if (!packetLoopActive) break;
-    await new Promise(resolve => { packetLoopTimer = setTimeout(resolve, Math.max(1, Number(els.packetInterval.value)) * 1000); });
-    packetLoopTimer = null;
+  const session = packetLoopSession;
+  updatePacketControlLabels();
+  log('OK', `packet loop started every ${els.packetInterval.value}s from index 0`);
+  while (packetLoopActive && session === packetLoopSession) {
+    updatePacketControlLabels();
+    await sendPacketOnce({ fromLoop: true });
+    if (!packetLoopActive || session !== packetLoopSession) break;
+    packetLoopIndex += 1;
+    updatePacketControlLabels();
+    await new Promise(resolve => {
+      const done = () => {
+        packetLoopTimer = null;
+        resolve();
+      };
+      packetLoopTimer = {
+        id: setTimeout(done, Math.max(1, Number(els.packetInterval.value)) * 1000),
+        resolve: done
+      };
+    });
   }
+  if (session === packetLoopSession) resetPacketLoopState();
 }
 
 function setPacketOut(text) {
@@ -1299,12 +1377,12 @@ function packetPreambleProgress(now) {
   const symbolMs = Number(els.packetSymbol.value);
   const mark = Number(els.packetMark.value);
   const space = Number(els.packetSpace.value);
-  const lookbackStart = now - Math.max(9000, symbolMs * 34 + 1200);
+  const lookbackStart = Math.max(packetRxArmTime, now - Math.max(9000, symbolMs * 34 + 1200));
   const first = traceBuffer.find(s => s.timestamp >= lookbackStart)?.timestamp;
   const fallback = {
     start: null, matches: 0, needed: Math.ceil(PACKET_PREAMBLE_BITS.length * 0.75),
     averageConfidence: 0, carrierConfidence: 0, currentPeak, currentStrength,
-    state: 'listening', reason: 'no recent detector samples in packet lookback window'
+    state: packetRxState, reason: 'no recent detector samples in packet lookback window'
   };
   if (!first) return fallback;
   let best = { ...fallback, reason: 'alternating preamble not matched yet' };
@@ -1348,8 +1426,10 @@ function updatePacketWaiting(now) {
   const mark = Number(els.packetMark.value);
   const space = Number(els.packetSpace.value);
   const progress = packetPreambleProgress(now);
+  packetRxState = progress.state;
+  updatePacketControlLabels();
   setPacketOut(`Packet RX armed
-RX state: ${isListening ? 'listening' : 'not listening'} → ${progress.state}
+RX mode: ${isListening ? 'listening' : 'not listening'} → ${progress.state}
 Expected preamble frequencies: mark ${formatFreq(mark)}, space ${formatFreq(space)}
 Current detected peak: ${formatFreq(progress.currentPeak)}
 Carrier confidence: ${percent(progress.carrierConfidence)}
@@ -1363,10 +1443,13 @@ function scanPackets(now) {
   if (now < packetSeenUntil) return;
   const start = findPacketPreamble(now);
   if (!start) { updatePacketWaiting(now); return; }
+  packetRxState = 'receiving';
+  updatePacketControlLabels();
   const decoded = decodePacketFrom(start, now);
   if (!decoded.complete && decoded.collectedBits < PACKET_PREAMBLE_BITS.length + 4) { updatePacketWaiting(now); return; }
   packetRxAttempt += 1;
   packetSeenUntil = now + Number(els.packetSymbol.value) * 8;
+  packetRxArmTime = packetSeenUntil;
   const status = decoded.finalResult;
   const text = formatPacketDiagnostic(decoded, `Packet attempt ${String(packetRxAttempt).padStart(3, '0')}`);
   packetLog.unshift(text);
@@ -1441,24 +1524,30 @@ function attachEvents() {
   els.sendPacket.addEventListener('click', () => sendPacketOnce());
   els.startPacketLoop.addEventListener('click', () => runPacketLoop());
   els.stopPacketLoop.addEventListener('click', () => {
-    packetLoopActive = false;
-    if (packetLoopTimer) clearTimeout(packetLoopTimer);
-    packetLoopTimer = null;
-    stopTx();
-    log('OK', 'packet loop stopped');
+    resetPacketLoopState({ stopAudio: true });
+    log('OK', 'packet loop stopped; TX sequence reset to index 0');
   });
   els.packetSelfTest.addEventListener('click', runPacketSelfTest);
   els.packetRx.addEventListener('click', async () => {
+    if (packetRxActive) {
+      packetRxActive = false;
+      packetRxState = 'idle';
+      els.packetRx.classList.remove('active');
+      updatePacketControlLabels();
+      log('WARN', 'packet receiver stopped; packet log left visible');
+      return;
+    }
     if (!isListening) {
       try { await startListening(); }
       catch (error) { log('BAD', `microphone unavailable: ${error.message}`); return; }
     }
     applyBestPacketDefaults();
-    packetRxActive = !packetRxActive;
-    els.packetRx.classList.toggle('active', packetRxActive);
-    els.packetRx.textContent = packetRxActive ? 'Packet RX On' : 'Receive Packet';
-    setPacketOut(packetRxActive ? 'Packet RX armed; waiting for preamble progress. Trace/activity continue updating.' : 'Packet RX idle.');
-    log(packetRxActive ? 'OK' : 'WARN', packetRxActive ? 'packet receiver armed' : 'packet receiver stopped');
+    packetRxActive = true;
+    els.packetRx.classList.add('active');
+    resetPacketRxParser({ clearLog: true });
+    setPacketOut('Packet RX armed; parser fresh and waiting for a new preamble. Trace/activity continue updating.');
+    updatePacketControlLabels();
+    log('OK', 'packet receiver armed with fresh parser state');
   });
   els.liveBtn.addEventListener('click', () => { liveMode = true; viewOffsetMs = 0; });
   els.traceShell.addEventListener('pointerdown', event => {
@@ -1477,6 +1566,7 @@ function attachEvents() {
 }
 
 buildControls();
+updatePacketControlLabels();
 setupCloseablePanels();
 updateSliderLabels();
 renderResults();
