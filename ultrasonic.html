@@ -57,7 +57,7 @@
 
     button, input, select { font: inherit; }
 
-    button, select {
+    button, select, input[type="text"], input[type="number"] {
       border: 1px solid #38536a;
       border-radius: 999px;
       background: #172638;
@@ -67,7 +67,9 @@
       transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
     }
 
-    select { border-radius: 10px; min-width: 11rem; }
+    select, input[type="text"], input[type="number"] { border-radius: 10px; min-width: 11rem; }
+    input[type="text"], input[type="number"] { background: #0f1d2c; color: var(--ink); padding: 0.52rem 0.7rem; }
+    input[type="checkbox"] { accent-color: var(--accent); }
     button:hover, select:hover { background: #1d3148; border-color: #4a6d89; }
     button.primary { background: #126486; border-color: #208fbd; color: white; }
     button.primary:hover { background: #1679a1; }
@@ -137,13 +139,24 @@
     }
 
     .result-row, .log-row {
-      align-items: center;
+      align-items: start;
       border-bottom: 1px solid var(--line);
       display: grid;
       gap: 0.7rem;
       grid-template-columns: 4.5rem 1fr auto;
       padding: 0.4rem 0;
     }
+
+    .result-main { display: grid; gap: 0.25rem; }
+    .result-detail, .packet-output {
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.8rem;
+      white-space: pre-wrap;
+    }
+
+    .packet-panel { margin-top: 1rem; }
+    .inline-label { align-items: center; display: flex; gap: 0.45rem; min-width: auto; }
 
     .pill {
       border-radius: 999px;
@@ -229,13 +242,24 @@
       </div>
     </div>
 
-    <h3>Recent activity by frequency</h3>
-    <div id="activityBars" aria-label="Recent aggregate energy by frequency"></div>
+    <h3>Accumulated activity by frequency</h3>
+    <p class="hint">Bars accumulate evidence each time a bin is detected; stronger and repeated detections add more.</p>
+    <div class="row">
+      <button id="resetActivity">Reset activity history</button>
+      <label>Activity view
+        <select id="activityMode">
+          <option value="session" selected>Session total</option>
+          <option value="recent">Recent 30 seconds</option>
+        </select>
+      </label>
+    </div>
+    <div id="activityBars" aria-label="Accumulated frequency activity evidence"></div>
   </section>
 
   <div class="grid">
     <section aria-labelledby="syncTitle">
       <h2 id="syncTitle">Sync / Test Results</h2>
+      <p class="hint">Workflow: start listening, press Sync RX, wait for sync, then press Sync TX on the other device. RX waits for the preamble before scoring, so simultaneous taps are not required.</p>
       <div class="results" id="results"></div>
       <p id="recommendation">Recommended profile: waiting for sync data.</p>
     </section>
@@ -245,6 +269,41 @@
       <div class="log" id="log"></div>
     </section>
   </div>
+
+  <section class="packet-panel" aria-labelledby="packetTitle">
+    <h2 id="packetTitle">Experimental Packet FSK</h2>
+    <p class="hint">Two-tone FSK: mark = bit 1, space = bit 0. Packet format: alternating preamble, sync byte, length byte, payload, checksum.</p>
+    <div class="control-row">
+      <label>Mark / bit 1
+        <select id="packetMark"></select>
+      </label>
+      <label>Space / bit 0
+        <select id="packetSpace"></select>
+      </label>
+      <label>Symbol length
+        <select id="packetSymbol">
+          <option value="500">500 ms</option>
+          <option value="300">300 ms</option>
+          <option value="200" selected>200 ms</option>
+          <option value="120">120 ms</option>
+          <option value="80">80 ms</option>
+        </select>
+      </label>
+      <label>Packet text
+        <input id="packetText" type="text" value="HELLO WORLD" maxlength="48">
+      </label>
+      <label>Loop interval seconds
+        <input id="packetInterval" type="number" min="1" max="30" step="0.5" value="2">
+      </label>
+    </div>
+    <div class="row">
+      <button id="sendPacket" class="primary">Send Packet</button>
+      <button id="startPacketLoop">Start Loop</button>
+      <button id="stopPacketLoop">Stop Loop</button>
+      <button id="packetRx">Receive Packet</button>
+    </div>
+    <div class="packet-output" id="packetOut">Packet RX idle.</div>
+  </section>
 </main>
 
 <script>
@@ -265,6 +324,10 @@ const STRONG_ENERGY = 0.018;
 const FADE_MS = 18;
 const SYNC_GAP_MS = 90;
 const EDGE_IGNORE_MS = 50;
+const SYNC_PREAMBLE_SYMBOL_MS = 100;
+const SYNC_PREAMBLE_BITS = [1, 0, 1, 0, 1, 0, 1, 0];
+const PACKET_SYNC_BYTE = 0xa7;
+const PACKET_PREAMBLE_BITS = Array.from({ length: 16 }, (_, index) => index % 2 ? 0 : 1);
 const TX_STATES = {
   IDLE: 'txIdle',
   TONE: 'txPlayingTone',
@@ -301,6 +364,18 @@ const els = {
   traceShell: document.getElementById('traceShell'),
   viewState: document.getElementById('viewState'),
   activityBars: document.getElementById('activityBars'),
+  resetActivity: document.getElementById('resetActivity'),
+  activityMode: document.getElementById('activityMode'),
+  packetMark: document.getElementById('packetMark'),
+  packetSpace: document.getElementById('packetSpace'),
+  packetSymbol: document.getElementById('packetSymbol'),
+  packetText: document.getElementById('packetText'),
+  packetInterval: document.getElementById('packetInterval'),
+  sendPacket: document.getElementById('sendPacket'),
+  startPacketLoop: document.getElementById('startPacketLoop'),
+  stopPacketLoop: document.getElementById('stopPacketLoop'),
+  packetRx: document.getElementById('packetRx'),
+  packetOut: document.getElementById('packetOut'),
   results: document.getElementById('results'),
   recommendation: document.getElementById('recommendation'),
   log: document.getElementById('log')
@@ -323,8 +398,18 @@ let txState = TX_STATES.IDLE;
 let txGeneration = 0;
 let txActiveNodes = [];
 let syncRxActive = false;
+let syncRxState = 'idle';
+let syncArmTime = 0;
 let syncStartTime = 0;
 let syncResults = [];
+let lastDetectionMeta = null;
+let packetLoopTimer = null;
+let packetLoopActive = false;
+let packetRxActive = false;
+let packetRxAttempt = 0;
+let packetSeenUntil = 0;
+let packetLog = [];
+let packetFreqTouched = false;
 
 function getSelectedSymbolMs() {
   return Number(els.symbolLength.value);
@@ -355,6 +440,18 @@ function getSyncSequence() {
       gap: SYNC_GAP_MS
     }
   ];
+}
+
+function getSyncTxSequence() {
+  const preamble = {
+    category: 'preamble',
+    name: 'sync preamble 10101010',
+    tones: SYNC_PREAMBLE_BITS.map(bit => bit ? 18000 : 16000),
+    duration: SYNC_PREAMBLE_SYMBOL_MS,
+    gap: 0,
+    afterGap: SYNC_GAP_MS
+  };
+  return [preamble, ...getSyncSequence()];
 }
 
 function ensureAudioContext() {
@@ -394,6 +491,17 @@ function buildControls() {
     els.toneButtons.append(button);
   }
   setSelectedTone(selectedTone);
+
+  for (const freq of TONES) {
+    for (const select of [els.packetMark, els.packetSpace]) {
+      const option = document.createElement('option');
+      option.value = String(freq);
+      option.textContent = `${freq / 1000} kHz`;
+      select.append(option);
+    }
+  }
+  els.packetMark.value = '18000';
+  els.packetSpace.value = '16000';
 
   for (const freq of BIN_FREQS) {
     const bin = document.createElement('div');
@@ -572,17 +680,24 @@ function detect() {
   const best = energies[0];
   const strength = Math.max(0, Math.min(1, best.energy / STRONG_ENERGY));
   const detected = strength > 0.12 ? best.freq : null;
+  const noiseFloor = energies.slice(2).reduce((sum, item) => sum + item.energy, 0) / Math.max(1, energies.length - 2);
+  const energyMap = Object.fromEntries(energies.map(item => [item.freq, item.energy]));
   currentPeak = detected;
   currentStrength = strength;
-  for (const item of energies) activity.set(item.freq, activity.get(item.freq) * 0.86 + Math.min(1, item.energy / STRONG_ENERGY) * 0.14);
-  appendSample(now, detected, strength);
+  lastDetectionMeta = { peakFrequency: best.freq, peakEnergy: best.energy, noiseFloor, energyMap };
+  for (const item of energies) {
+    const normalized = Math.min(1, item.energy / STRONG_ENERGY);
+    if (normalized > 0.10) activity.set(item.freq, activity.get(item.freq) + normalized);
+  }
+  appendSample(now, detected, strength, lastDetectionMeta);
 }
 
-function appendSample(timestamp, frequency, strength) {
-  traceBuffer.push({ timestamp, frequency, strength, mode: modeLabel });
+function appendSample(timestamp, frequency, strength, meta = null) {
+  traceBuffer.push({ timestamp, frequency, strength, mode: modeLabel, meta });
   const cutoff = timestamp - HISTORY_MS;
   while (traceBuffer.length && traceBuffer[0].timestamp < cutoff) traceBuffer.shift();
   if (syncRxActive) scoreSync(timestamp);
+  if (packetRxActive) scanPackets(timestamp);
 }
 
 function yForFrequency(freq, plot) {
@@ -659,15 +774,23 @@ function drawTrace() {
 }
 
 function updateActivityBars() {
-  for (const freq of BIN_FREQS) {
-    const fill = document.getElementById(`bin-${freq}`);
-    fill.style.width = `${Math.round((activity.get(freq) || 0) * 100)}%`;
+  let values = BIN_FREQS.map(freq => activity.get(freq) || 0);
+  if (els.activityMode.value === 'recent') {
+    const cutoff = performance.now() - TRACE_WINDOW_MS;
+    values = BIN_FREQS.map(freq => traceBuffer.filter(s => s.timestamp >= cutoff && s.frequency === freq).reduce((sum, s) => sum + s.strength, 0));
   }
+  const maxValue = Math.max(1, ...values);
+  BIN_FREQS.forEach((freq, index) => {
+    const fill = document.getElementById(`bin-${freq}`);
+    fill.style.width = `${Math.round((values[index] / maxValue) * 100)}%`;
+    fill.title = `${formatFreq(freq)} score ${values[index].toFixed(1)}`;
+  });
 }
 
 function updateStatus() {
   const listenText = isListening ? 'listening' : 'not listening';
-  els.status.textContent = `Status: ${listenText} | peak ${formatFreq(currentPeak)} | strength ${Math.round(currentStrength * 100)}% | TX ${txState} | ${modeLabel}`;
+  const syncText = syncRxActive || syncRxState !== 'idle' ? ` | RX ${syncRxState}` : '';
+  els.status.textContent = `Status: ${listenText}${syncText} | peak ${formatFreq(currentPeak)} | strength ${Math.round(currentStrength * 100)}% | TX ${txState} | ${modeLabel}`;
 }
 
 function syncPlanWithStates() {
@@ -689,7 +812,7 @@ function renderResults() {
     const row = document.createElement('div');
     row.className = 'result-row';
     const statusClass = result.status === '—' ? 'waiting' : result.status.toLowerCase();
-    row.innerHTML = `<span>Test ${String(index + 1).padStart(2, '0')}</span><span>${result.name}</span><span class="pill ${statusClass}">${result.status}</span>`;
+    row.innerHTML = `<span>Test ${String(index + 1).padStart(2, '0')}</span><span class="result-main"><strong>${result.name}</strong><span class="result-detail">${result.detail || describePendingResult(result)}</span></span><span class="pill ${statusClass}">${result.status}</span>`;
     els.results.append(row);
   });
   updateRecommendation(rows);
@@ -715,47 +838,298 @@ function updateRecommendation(rows) {
   els.recommendation.textContent = `Recommended profile: mark ${formatFreq(mark)}, space ${formatFreq(space)}, fastest reliable symbol ${fastest} ms (${rateLabel(fastest)}), confidence ${confidence}%`;
 }
 
+function percent(value) {
+  return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
+}
+
+function describeExpected(step) {
+  if (step.tones.length === 1) return `Expected: ${formatFreq(step.tones[0])} for ${step.duration} ms`;
+  const unique = [...new Set(step.tones)].map(formatFreq).join('/');
+  return `Expected symbols: ${step.tones.length} at ${step.duration} ms (${unique})`;
+}
+
+function describePendingResult(result) {
+  return `${describeExpected(result)}
+Verdict: ${result.status}
+Reason: ${syncRxState === 'waiting for sync' ? 'RX is listening for the alternating sync preamble.' : 'No evidence scored yet.'}`;
+}
+
 function scoreWindow(expectedFreq, start, end) {
   const stableStart = start + EDGE_IGNORE_MS;
   const stableEnd = end - EDGE_IGNORE_MS;
-  if (stableEnd <= stableStart) return 0;
-  const samples = traceBuffer.filter(s => s.timestamp >= stableStart && s.timestamp <= stableEnd && s.frequency);
-  if (!samples.length) return 0;
-  const hits = samples.filter(s => Math.abs(s.frequency - expectedFreq) <= 700);
-  const strength = hits.reduce((sum, s) => sum + s.strength, 0) / Math.max(1, hits.length);
-  return (hits.length / samples.length) * strength;
+  const expectedWindows = Math.max(1, Math.round((stableEnd - stableStart) / DETECT_INTERVAL_MS));
+  const samples = traceBuffer.filter(s => s.timestamp >= stableStart && s.timestamp <= stableEnd);
+  const signalSamples = samples.filter(s => s.frequency);
+  const hits = signalSamples.filter(s => Math.abs(s.frequency - expectedFreq) <= 700);
+  const targetStrengths = samples.map(s => Math.min(1, ((s.meta?.energyMap?.[expectedFreq]) || 0) / STRONG_ENERGY));
+  const targetAvg = targetStrengths.reduce((sum, value) => sum + value, 0) / Math.max(1, targetStrengths.length);
+  const targetPeak = Math.max(0, ...targetStrengths);
+  const noise = samples.reduce((sum, s) => sum + Math.min(1, ((s.meta?.noiseFloor) || 0) / STRONG_ENERGY), 0) / Math.max(1, samples.length);
+  const seenWindows = hits.length;
+  const seenRatio = seenWindows / expectedWindows;
+  const hitStrength = hits.reduce((sum, s) => sum + s.strength, 0) / Math.max(1, hits.length);
+  const score = Math.min(1, (seenRatio * 0.55) + (targetAvg * 0.25) + (hitStrength * 0.20));
+  const peakDetected = signalSamples.sort((a, b) => b.strength - a.strength)[0]?.frequency || null;
+  const firstHit = hits[0]?.timestamp;
+  const center = (stableStart + stableEnd) / 2;
+  const expectedCenter = (start + end) / 2;
+  let alignment = 'not seen';
+  if (firstHit !== undefined) {
+    const offset = center - expectedCenter;
+    alignment = Math.abs(offset) <= DETECT_INTERVAL_MS ? 'aligned' : offset < 0 ? `early by ${Math.round(Math.abs(offset))} ms` : `late by ${Math.round(offset)} ms`;
+  }
+  return { expectedFreq, score, peakDetected, targetAvg, targetPeak, noise, ratio: targetAvg / Math.max(0.01, noise), seenWindows, expectedWindows, seenRatio, alignment };
+}
+
+function summarizeStep(step, cursor) {
+  const toneSpan = step.duration + (step.gap ?? SYNC_GAP_MS);
+  const windows = step.tones.map((tone, index) => scoreWindow(tone, cursor + index * toneSpan, cursor + index * toneSpan + step.duration));
+  const score = windows.reduce((sum, w) => sum + w.score, 0) / Math.max(1, windows.length);
+  const matched = windows.filter(w => w.score > 0.22).length;
+  const lowConfidence = windows.map((w, index) => w.score > 0.12 && w.score <= 0.35 ? index + 1 : null).filter(Boolean);
+  const bestWindow = windows.slice().sort((a, b) => b.targetPeak - a.targetPeak)[0] || windows[0];
+  const status = score > 0.52 ? 'PASS' : score > 0.22 ? 'WEAK' : 'FAIL';
+  const reason = status === 'PASS'
+    ? 'target evidence met the current PASS threshold'
+    : status === 'WEAK'
+      ? 'target was detected, but below current PASS threshold'
+      : matched
+        ? 'timing match failed, but one or more expected tones were detected'
+        : 'expected target was not detected above the noise floor';
+  const detail = `${describeExpected(step)}
+Peak detected: ${formatFreq(bestWindow.peakDetected)}
+Target band avg: ${percent(windows.reduce((sum, w) => sum + w.targetAvg, 0) / windows.length)}
+Target band peak: ${percent(bestWindow.targetPeak)}
+Seen windows: ${windows.reduce((sum, w) => sum + w.seenWindows, 0)} / ${windows.reduce((sum, w) => sum + w.expectedWindows, 0)} (${percent(windows.reduce((sum, w) => sum + w.seenRatio, 0) / windows.length)})
+Noise floor: ${percent(windows.reduce((sum, w) => sum + w.noise, 0) / windows.length)}
+Target/noise ratio: ${(windows.reduce((sum, w) => sum + w.ratio, 0) / windows.length).toFixed(1)}x
+Alignment: ${windows.map(w => w.alignment).filter((value, index, arr) => arr.indexOf(value) === index).join(', ')}
+Matched symbols: ${matched} / ${windows.length}${lowConfidence.length ? `
+Low-confidence symbols: ${lowConfidence.join(', ')}` : ''}
+Verdict: ${status}
+Reason: ${reason}`;
+  return { ...step, status, score, freq: step.tones[0], detail, matched, lowConfidence };
+}
+
+function findSyncPreamble(now) {
+  const lookback = traceBuffer.filter(s => s.timestamp >= now - 3500 && s.frequency);
+  if (lookback.length < 6) return null;
+  const symbols = [];
+  for (let start = lookback[0].timestamp; start <= now - SYNC_PREAMBLE_SYMBOL_MS; start += SYNC_PREAMBLE_SYMBOL_MS / 2) {
+    const end = start + SYNC_PREAMBLE_SYMBOL_MS;
+    const samples = lookback.filter(s => s.timestamp >= start && s.timestamp < end);
+    if (!samples.length) continue;
+    const avg16 = samples.reduce((sum, s) => sum + Math.min(1, ((s.meta?.energyMap?.[16000]) || 0) / STRONG_ENERGY), 0) / samples.length;
+    const avg18 = samples.reduce((sum, s) => sum + Math.min(1, ((s.meta?.energyMap?.[18000]) || 0) / STRONG_ENERGY), 0) / samples.length;
+    const bit = avg18 > avg16 ? 1 : 0;
+    const confidence = Math.abs(avg18 - avg16);
+    if (confidence > 0.08 && Math.max(avg16, avg18) > 0.12) symbols.push({ bit, start, end, confidence });
+  }
+  for (let i = 0; i <= symbols.length - SYNC_PREAMBLE_BITS.length; i++) {
+    const slice = symbols.slice(i, i + SYNC_PREAMBLE_BITS.length);
+    const matches = slice.filter((symbol, index) => symbol.bit === SYNC_PREAMBLE_BITS[index]).length;
+    if (matches >= 6) return slice.at(-1).end;
+  }
+  return null;
 }
 
 function scoreSync(now) {
+  const sequence = getSyncSequence();
+  if (syncRxState === 'waiting for sync') {
+    const detectedAt = findSyncPreamble(now);
+    if (detectedAt) {
+      syncStartTime = detectedAt + SYNC_GAP_MS;
+      syncRxState = 'sync detected';
+      modeLabel = 'sync detected';
+      log('OK', 'sync preamble detected; scoring will start automatically');
+    } else if (now - syncArmTime > 20000) {
+      syncRxActive = false;
+      syncRxState = 'no sync found';
+      modeLabel = 'no sync found';
+      renderResults();
+      log('WARN', 'no sync preamble found after 20 seconds');
+    }
+    return;
+  }
   let cursor = syncStartTime;
   const scored = [];
-  const sequence = getSyncSequence();
-  for (const step of sequence) {
+  for (const [index, step] of sequence.entries()) {
     const toneSpan = step.duration + (step.gap ?? SYNC_GAP_MS);
     const stepEnd = cursor + toneSpan * step.tones.length + (step.afterGap ?? SYNC_GAP_MS);
     if (now < stepEnd) {
-      scored.push({ ...step, status: 'RUNNING', score: 0, freq: step.tones[0] });
+      syncRxState = `running test ${String(index + 1).padStart(2, '0')} / ${sequence.length}`;
+      modeLabel = syncRxState;
+      scored.push({ ...step, status: 'RUNNING', score: 0, freq: step.tones[0], detail: `${describeExpected(step)}
+Verdict: RUNNING
+Reason: collecting windows for this test.` });
       break;
     }
-    const scores = step.tones.map((tone, index) => {
-      const toneStart = cursor + index * toneSpan;
-      return scoreWindow(tone, toneStart, toneStart + step.duration);
-    });
-    const score = scores.reduce((sum, value) => sum + value, 0) / scores.length;
-    const status = score > 0.52 ? 'PASS' : score > 0.22 ? 'WEAK' : 'FAIL';
-    scored.push({ ...step, status, score, freq: step.tones[0] });
+    scored.push(summarizeStep(step, cursor));
     cursor = stepEnd;
   }
-  const changed = JSON.stringify(scored.map(r => [r.name, r.status, Math.round(r.score * 100)])) !== JSON.stringify(syncResults.map(r => [r.name, r.status, Math.round(r.score * 100)]));
+  const changed = JSON.stringify(scored.map(r => [r.name, r.status, Math.round(r.score * 100), r.detail])) !== JSON.stringify(syncResults.map(r => [r.name, r.status, Math.round(r.score * 100), r.detail]));
   if (changed) {
     syncResults = scored;
     renderResults();
   }
   if (syncResults.length === sequence.length && syncResults.every(r => ['PASS', 'WEAK', 'FAIL'].includes(r.status))) {
     syncRxActive = false;
-    modeLabel = 'sync RX complete';
+    syncRxState = 'sync complete';
+    modeLabel = 'sync complete';
     log('OK', 'sync sequence scored');
   }
+}
+
+function textToBytes(text) {
+  return Array.from(new TextEncoder().encode(text)).slice(0, 255);
+}
+
+function byteToBits(byte) {
+  return Array.from({ length: 8 }, (_, index) => (byte >> (7 - index)) & 1);
+}
+
+function bitsToByte(bits) {
+  return bits.reduce((value, bit) => (value << 1) | (bit ? 1 : 0), 0);
+}
+
+function buildPacketBits() {
+  const payload = textToBytes(els.packetText.value || 'HELLO WORLD');
+  const checksum = payload.reduce((sum, byte) => (sum + byte) & 0xff, 0);
+  const bytes = [PACKET_SYNC_BYTE, payload.length, ...payload, checksum];
+  return [...PACKET_PREAMBLE_BITS, ...bytes.flatMap(byteToBits)];
+}
+
+
+function applyBestPacketDefaults() {
+  if (packetFreqTouched) return;
+  const ranked = [...activity.entries()].filter(([, score]) => score > 0).sort((a, b) => b[1] - a[1]);
+  if (ranked.length < 2) return;
+  const mark = ranked[0][0];
+  const space = ranked.find(([freq]) => Math.abs(freq - mark) >= 1000)?.[0] || ranked[1][0];
+  if (TONES.includes(mark) && TONES.includes(space)) {
+    els.packetMark.value = String(mark);
+    els.packetSpace.value = String(space);
+  }
+}
+
+async function sendPacketOnce() {
+  applyBestPacketDefaults();
+  const mark = Number(els.packetMark.value);
+  const space = Number(els.packetSpace.value);
+  const symbolMs = Number(els.packetSymbol.value);
+  const bits = buildPacketBits();
+  const sequence = [{ name: `packet ${bits.length} bits`, tones: bits.map(bit => bit ? mark : space), duration: symbolMs, gap: 0 }];
+  log('OK', `packet TX ${bits.length} bits, mark ${formatFreq(mark)}, space ${formatFreq(space)}, ${symbolMs} ms symbols`);
+  await playSequence(sequence, TX_STATES.PATTERN, 'packet TX');
+}
+
+
+async function runPacketLoop() {
+  if (packetLoopActive) return;
+  packetLoopActive = true;
+  log('OK', `packet loop started every ${els.packetInterval.value}s`);
+  while (packetLoopActive) {
+    await sendPacketOnce();
+    if (!packetLoopActive) break;
+    await new Promise(resolve => { packetLoopTimer = setTimeout(resolve, Math.max(1, Number(els.packetInterval.value)) * 1000); });
+    packetLoopTimer = null;
+  }
+}
+
+function setPacketOut(text) {
+  els.packetOut.textContent = text;
+}
+
+function decodePacketFrom(startTime) {
+  const mark = Number(els.packetMark.value);
+  const space = Number(els.packetSpace.value);
+  const symbolMs = Number(els.packetSymbol.value);
+  const maxBits = 16 + 16 + (255 + 1) * 8;
+  const bits = [];
+  const uncertain = [];
+  const confidences = [];
+  for (let index = 0; index < maxBits; index++) {
+    const start = startTime + index * symbolMs + EDGE_IGNORE_MS;
+    const end = startTime + (index + 1) * symbolMs - EDGE_IGNORE_MS;
+    if (performance.now() < end) break;
+    const samples = traceBuffer.filter(s => s.timestamp >= start && s.timestamp <= end);
+    if (!samples.length) break;
+    const markAvg = samples.reduce((sum, s) => sum + Math.min(1, ((s.meta?.energyMap?.[mark]) || 0) / STRONG_ENERGY), 0) / samples.length;
+    const spaceAvg = samples.reduce((sum, s) => sum + Math.min(1, ((s.meta?.energyMap?.[space]) || 0) / STRONG_ENERGY), 0) / samples.length;
+    const confidence = Math.abs(markAvg - spaceAvg) / Math.max(0.01, markAvg + spaceAvg);
+    bits.push(markAvg >= spaceAvg ? 1 : 0);
+    confidences.push(confidence);
+    if (confidence < 0.18 || Math.max(markAvg, spaceAvg) < 0.10) uncertain.push(index + 1);
+    if (bits.length >= 32) {
+      const payloadLength = bitsToByte(bits.slice(24, 32));
+      const needed = 16 + 16 + payloadLength * 8 + 8;
+      if (bits.length >= needed) break;
+    }
+  }
+  const groupedBits = bits.map((bit, index) => uncertain.includes(index + 1) ? '?' : String(bit)).join('').replace(/(.{8})/g, '$1 ').trim();
+  if (bits.length < 32) return { complete: false, groupedBits, uncertain, text: '', checksumOk: false, confidence: average(confidences) };
+  const syncByte = bitsToByte(bits.slice(16, 24));
+  const length = bitsToByte(bits.slice(24, 32));
+  const neededBits = 16 + 16 + length * 8 + 8;
+  if (bits.length < neededBits) return { complete: false, groupedBits, uncertain, text: '', checksumOk: false, confidence: average(confidences), length };
+  const payloadBits = bits.slice(32, 32 + length * 8);
+  const payload = [];
+  for (let i = 0; i < payloadBits.length; i += 8) payload.push(bitsToByte(payloadBits.slice(i, i + 8)));
+  const checksum = bitsToByte(bits.slice(32 + length * 8, 40 + length * 8));
+  const expectedChecksum = payload.reduce((sum, byte) => (sum + byte) & 0xff, 0);
+  const text = new TextDecoder().decode(new Uint8Array(payload)).replace(/[^\x20-\x7E]/g, '?');
+  return { complete: true, groupedBits, uncertain, text, checksumOk: checksum === expectedChecksum && syncByte === PACKET_SYNC_BYTE, confidence: average(confidences), length, syncByte };
+}
+
+function average(values) {
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+}
+
+function findPacketPreamble(now) {
+  const symbolMs = Number(els.packetSymbol.value);
+  const mark = Number(els.packetMark.value);
+  const space = Number(els.packetSpace.value);
+  const lookbackStart = now - Math.max(6000, symbolMs * 30);
+  const first = traceBuffer.find(s => s.timestamp >= lookbackStart)?.timestamp;
+  if (!first) return null;
+  for (let start = first; start <= now - PACKET_PREAMBLE_BITS.length * symbolMs; start += symbolMs / 2) {
+    let matches = 0;
+    let confidenceSum = 0;
+    for (let i = 0; i < PACKET_PREAMBLE_BITS.length; i++) {
+      const samples = traceBuffer.filter(s => s.timestamp >= start + i * symbolMs + EDGE_IGNORE_MS && s.timestamp <= start + (i + 1) * symbolMs - EDGE_IGNORE_MS);
+      if (!samples.length) continue;
+      const markAvg = samples.reduce((sum, s) => sum + Math.min(1, ((s.meta?.energyMap?.[mark]) || 0) / STRONG_ENERGY), 0) / samples.length;
+      const spaceAvg = samples.reduce((sum, s) => sum + Math.min(1, ((s.meta?.energyMap?.[space]) || 0) / STRONG_ENERGY), 0) / samples.length;
+      const bit = markAvg >= spaceAvg ? 1 : 0;
+      const confidence = Math.abs(markAvg - spaceAvg);
+      if (bit === PACKET_PREAMBLE_BITS[i] && confidence > 0.06) matches++;
+      confidenceSum += confidence;
+    }
+    if (matches >= 12 && confidenceSum / PACKET_PREAMBLE_BITS.length > 0.08) return start;
+  }
+  return null;
+}
+
+function scanPackets(now) {
+  if (now < packetSeenUntil) return;
+  const start = findPacketPreamble(now);
+  if (!start) return;
+  const decoded = decodePacketFrom(start);
+  if (!decoded.complete && decoded.groupedBits.length < 12) return;
+  packetRxAttempt += 1;
+  packetSeenUntil = now + Number(els.packetSymbol.value) * 12;
+  const status = decoded.complete ? (decoded.checksumOk ? 'OK' : 'BAD') : 'PARTIAL';
+  const text = `Packet attempt ${String(packetRxAttempt).padStart(3, '0')}
+Preamble: detected
+Bits: ${decoded.groupedBits || '(collecting)'}
+Text: ${decoded.checksumOk ? decoded.text : decoded.text ? `Best guess: ${decoded.text}` : '(not decoded)'}
+Checksum: ${decoded.complete ? decoded.checksumOk ? 'OK' : 'BAD' : 'partial'}
+Confidence: ${percent(decoded.confidence)}${decoded.uncertain.length ? `
+Uncertain bits: ${decoded.uncertain.join(', ')}` : ''}`;
+  packetLog.unshift(text);
+  packetLog = packetLog.slice(0, 5);
+  setPacketOut(packetLog.join('\n\n'));
+  log(status === 'OK' ? 'OK' : status === 'BAD' ? 'BAD' : 'WARN', `packet RX ${status.toLowerCase()}`);
 }
 
 function animationLoop() {
@@ -775,7 +1149,7 @@ function attachEvents() {
     const symbolMs = getSelectedSymbolMs();
     playSequence([{ name: `16/18 kHz pattern, ${symbolMs} ms`, tones: [16000, 18000, 16000, 18000, 16000, 18000], duration: symbolMs, gap: SYNC_GAP_MS }], TX_STATES.PATTERN, 'pattern');
   });
-  els.syncTx.addEventListener('click', () => playSequence(getSyncSequence(), TX_STATES.SYNC, 'sync TX'));
+  els.syncTx.addEventListener('click', () => playSequence(getSyncTxSequence(), TX_STATES.SYNC, 'sync TX'));
   els.listen.addEventListener('click', async () => {
     if (isListening) stopListening();
     else {
@@ -789,11 +1163,40 @@ function attachEvents() {
       catch (error) { log('BAD', `microphone unavailable: ${error.message}`); return; }
     }
     syncRxActive = true;
-    syncStartTime = performance.now() + 250;
+    syncRxState = 'waiting for sync';
+    syncArmTime = performance.now();
+    syncStartTime = 0;
     syncResults = [];
-    modeLabel = 'sync RX waiting';
+    modeLabel = 'waiting for sync';
     renderResults();
-    log('OK', 'sync receiver armed');
+    log('OK', 'sync receiver armed; waiting for preamble');
+  });
+  els.resetActivity.addEventListener('click', () => {
+    activity = new Map(BIN_FREQS.map(freq => [freq, 0]));
+    log('OK', 'activity history reset');
+  });
+  els.packetMark.addEventListener('change', () => { packetFreqTouched = true; });
+  els.packetSpace.addEventListener('change', () => { packetFreqTouched = true; });
+  els.sendPacket.addEventListener('click', () => sendPacketOnce());
+  els.startPacketLoop.addEventListener('click', () => runPacketLoop());
+  els.stopPacketLoop.addEventListener('click', () => {
+    packetLoopActive = false;
+    if (packetLoopTimer) clearTimeout(packetLoopTimer);
+    packetLoopTimer = null;
+    stopTx();
+    log('OK', 'packet loop stopped');
+  });
+  els.packetRx.addEventListener('click', async () => {
+    if (!isListening) {
+      try { await startListening(); }
+      catch (error) { log('BAD', `microphone unavailable: ${error.message}`); return; }
+    }
+    applyBestPacketDefaults();
+    packetRxActive = !packetRxActive;
+    els.packetRx.classList.toggle('active', packetRxActive);
+    els.packetRx.textContent = packetRxActive ? 'Packet RX On' : 'Receive Packet';
+    setPacketOut(packetRxActive ? 'Packet RX armed; waiting for alternating preamble.' : 'Packet RX idle.');
+    log(packetRxActive ? 'OK' : 'WARN', packetRxActive ? 'packet receiver armed' : 'packet receiver stopped');
   });
   els.liveBtn.addEventListener('click', () => { liveMode = true; viewOffsetMs = 0; });
   els.traceShell.addEventListener('pointerdown', event => {
