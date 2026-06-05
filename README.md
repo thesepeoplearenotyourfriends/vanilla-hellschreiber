@@ -120,7 +120,7 @@ The browser receiver uses `AudioContext.decodeAudioData` for the first-pass WAV 
 - The simple tone detector is intentionally boring and understandable rather than highly optimized.
 - Browser audio playback may require a user gesture, which the `Play` button provides.
 
-## Ultrasonic Playground
+## Ultrasonic Playground: https://thesepeoplearenotyourfriends.github.io/vanilla-hellschreiber/ultrasonic.html
 
 The repository now includes `ultrasonic.html`, a second browser-only page linked from `index.html`. It is a calm high-frequency audio instrument panel for early speaker-to-microphone experiments rather than a complete modem.
 
