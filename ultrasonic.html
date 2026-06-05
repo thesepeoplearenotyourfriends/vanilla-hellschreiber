@@ -360,13 +360,25 @@
 
   <section class="packet-panel" aria-labelledby="packetTitle" data-panel-title="Microframe Carousel FSK">
     <h2 id="packetTitle">Microframe Carousel FSK</h2>
-    <p class="hint">Two-tone FSK carousel: short self-contained microframes repeat continuously. RX can join mid-loop, store observations by sequence slot, and progressively assemble readable text.</p>
+    <p class="hint">Tone-delimited microframe carousel: a short 14 kHz marker starts each frame, then two-tone FSK body bits carry seq/data or META/EOF fields. RX can join mid-loop and progressively assemble readable text.</p>
     <div class="control-row">
       <label>Mark / bit 1
         <select id="packetMark"></select>
       </label>
       <label>Space / bit 0
         <select id="packetSpace"></select>
+      </label>
+      <label>Frame marker
+        <select id="packetMarkerFreq"></select>
+      </label>
+      <label>Marker duration ms
+        <input id="packetMarkerDuration" type="number" min="120" max="800" step="10" value="280">
+      </label>
+      <label>Marker mode
+        <select id="packetMarkerMode">
+          <option value="tone" selected>Tone-delimited</option>
+          <option value="legacy">Legacy alternating preamble</option>
+        </select>
       </label>
       <label>Symbol length
         <select id="packetSymbol">
@@ -441,6 +453,14 @@ const MICROFRAME_META_SYNC = 0x5a;
 const MICROFRAME_BYTES_PER_SLOT = 2;
 const PACKET_SYNC_BYTE = MICROFRAME_DATA_SYNC;
 const PACKET_PREAMBLE_BITS = Array.from({ length: 16 }, (_, index) => index % 2 ? 0 : 1);
+const PACKET_MARKER_DEFAULT_FREQ = 14000;
+const PACKET_MARKER_GUARD_MS = 100;
+const PACKET_META_MARKER_PULSE_MS = 150;
+const PACKET_META_MARKER_GAP_MS = 90;
+const PACKET_MARKER_THRESHOLD = 0.18;
+const PACKET_MARKER_MIN_MS = 110;
+const PACKET_MARKER_SPLIT_MS = 120;
+const PACKET_MARKER_META_MAX_GAP_MS = 190;
 const TX_STATES = {
   IDLE: 'txIdle',
   TONE: 'txPlayingTone',
@@ -481,6 +501,9 @@ const els = {
   activityMode: document.getElementById('activityMode'),
   packetMark: document.getElementById('packetMark'),
   packetSpace: document.getElementById('packetSpace'),
+  packetMarkerFreq: document.getElementById('packetMarkerFreq'),
+  packetMarkerDuration: document.getElementById('packetMarkerDuration'),
+  packetMarkerMode: document.getElementById('packetMarkerMode'),
   packetSymbol: document.getElementById('packetSymbol'),
   packetFrameMode: document.getElementById('packetFrameMode'),
   packetText: document.getElementById('packetText'),
@@ -545,6 +568,7 @@ const PACKET_LOG_LIMIT = 500;
 const PACKET_VISIBLE_LIMIT = 20;
 let packetFreqTouched = false;
 let packetRxProgressLast = 0;
+let packetLastMarkerStart = 0;
 let microframeMessageId = Math.floor(Math.random() * 256);
 let microframeRx = makeEmptyMicroframeRxState();
 
@@ -645,7 +669,7 @@ function buildControls() {
   setSelectedTone(selectedTone);
 
   for (const freq of TONES) {
-    for (const select of [els.packetMark, els.packetSpace]) {
+    for (const select of [els.packetMark, els.packetSpace, els.packetMarkerFreq]) {
       const option = document.createElement('option');
       option.value = String(freq);
       option.textContent = `${freq / 1000} kHz`;
@@ -654,6 +678,7 @@ function buildControls() {
   }
   els.packetMark.value = '18000';
   els.packetSpace.value = '16000';
+  els.packetMarkerFreq.value = String(PACKET_MARKER_DEFAULT_FREQ);
 
   for (const freq of BIN_FREQS) {
     const bin = document.createElement('div');
@@ -737,10 +762,11 @@ function resetPacketLoopState({ stopAudio = false } = {}) {
 }
 
 function resetPacketRxParser({ clearLog = false } = {}) {
-  packetRxState = 'waiting preamble';
+  packetRxState = getPacketMarkerMode() === 'tone' ? 'watching marker tone' : 'waiting preamble';
   packetSeenUntil = 0;
   packetRxArmTime = performance.now();
   packetRxProgressLast = 0;
+  packetLastMarkerStart = 0;
   if (clearLog) {
     resetMicroframeAssembly();
     packetLogSession += 1;
@@ -1337,6 +1363,32 @@ function buildMicroframeBitsForFrame(frame, mode = getPacketFrameMode()) {
   return [...PACKET_PREAMBLE_BITS, ...buildMicroframeBytes(frame, mode).flatMap(byteToBits)];
 }
 
+function getPacketMarkerMode() {
+  return els.packetMarkerMode?.value || 'tone';
+}
+
+function getPacketMarkerFreq() {
+  return Number(els.packetMarkerFreq?.value || PACKET_MARKER_DEFAULT_FREQ);
+}
+
+function getPacketMarkerDurationMs() {
+  return Number(els.packetMarkerDuration?.value || 280);
+}
+
+function toneDelimitedBytesWithOptionalCheck(bytes, mode = getPacketFrameMode()) {
+  if (mode !== 'checked') return bytes;
+  const check = bytes.reduce((value, byte) => value ^ byte, 0) & 0xff;
+  return [...bytes, check];
+}
+
+function buildToneDelimitedFrameBodyBytes(frame, mode = getPacketFrameMode()) {
+  if (frame.type === 'meta') {
+    const bytes = [frame.messageId & 0xff, frame.length & 0xff, frame.totalSlots & 0xff, frame.crc & 0xff, (frame.crc >> 8) & 0xff];
+    return toneDelimitedBytesWithOptionalCheck(bytes, mode);
+  }
+  return toneDelimitedBytesWithOptionalCheck([frame.seq & 0xff, frame.bytes[0] & 0xff, frame.bytes[1] & 0xff], mode);
+}
+
 function sanitizeByteForDisplay(byte) {
   return byte >= 32 && byte <= 126 ? String.fromCharCode(byte) : '?';
 }
@@ -1484,7 +1536,8 @@ function buildPacketBits(text) {
 
 function applyBestPacketDefaults() {
   if (packetFreqTouched) return;
-  const ranked = [...activity.entries()].filter(([, score]) => score > 0).sort((a, b) => b[1] - a[1]);
+  const markerFreq = getPacketMarkerFreq();
+  const ranked = [...activity.entries()].filter(([freq, score]) => score > 0 && (getPacketMarkerMode() !== 'tone' || freq !== markerFreq)).sort((a, b) => b[1] - a[1]);
   if (ranked.length < 2) return;
   const mark = ranked[0][0];
   const space = ranked.find(([freq]) => Math.abs(freq - mark) >= 1000)?.[0] || ranked[1][0];
@@ -1501,22 +1554,32 @@ async function sendPacketOnce({ fromLoop = false } = {}) {
   const space = Number(els.packetSpace.value);
   const symbolMs = Number(els.packetSymbol.value);
   const mode = getPacketFrameMode();
+  const markerMode = getPacketMarkerMode();
+  const markerFreq = getPacketMarkerFreq();
+  const markerDuration = getPacketMarkerDurationMs();
   const plan = buildMicroframeCarouselFrames();
   const sequence = [
-    { name: 'microframe carousel warmup carrier', tones: [space], duration: Math.max(250, symbolMs * 3), gap: 0, afterGap: Math.max(80, symbolMs) }
+    { name: 'microframe carousel warmup silence/space', tones: [space], duration: Math.max(180, symbolMs), gap: 0, afterGap: Math.max(80, symbolMs * 0.5) }
   ];
   for (const frame of plan.frames) {
-    const bits = buildMicroframeBitsForFrame(frame, mode);
-    sequence.push({
-      name: frame.type === 'meta' ? `META/EOF length ${plan.payload.length}, slots ${plan.totalSlots}, CRC 0x${plan.crc.toString(16).padStart(4, '0')}` : `microframe seq ${frame.seq}: ${frame.bytes.map(byte => sanitizeByteForDisplay(byte)).join('')}`,
-      tones: bits.map(bit => bit ? mark : space),
-      duration: symbolMs,
-      gap: 0,
-      afterGap: Math.max(40, symbolMs * 0.5)
-    });
+    const label = frame.type === 'meta' ? `META/EOF length ${plan.payload.length}, slots ${plan.totalSlots}, CRC 0x${plan.crc.toString(16).padStart(4, '0')}` : `microframe seq ${frame.seq}: ${frame.bytes.map(byte => sanitizeByteForDisplay(byte)).join('')}`;
+    if (markerMode === 'tone') {
+      const bodyBytes = buildToneDelimitedFrameBodyBytes(frame, mode);
+      const bits = bodyBytes.flatMap(byteToBits);
+      if (frame.type === 'meta') {
+        sequence.push({ name: `first ${formatFreq(markerFreq)} META/EOF marker pulse for ${label}`, tones: [markerFreq], duration: PACKET_META_MARKER_PULSE_MS, gap: 0, afterGap: PACKET_META_MARKER_GAP_MS });
+        sequence.push({ name: `second ${formatFreq(markerFreq)} META/EOF marker pulse for ${label}`, tones: [markerFreq], duration: PACKET_META_MARKER_PULSE_MS, gap: 0, afterGap: PACKET_MARKER_GUARD_MS });
+      } else {
+        sequence.push({ name: `${formatFreq(markerFreq)} marker for ${label}`, tones: [markerFreq], duration: markerDuration, gap: 0, afterGap: PACKET_MARKER_GUARD_MS });
+      }
+      sequence.push({ name: `tone-delimited body ${label}`, tones: bits.map(bit => bit ? mark : space), duration: symbolMs, gap: 0, afterGap: Math.max(40, symbolMs * 0.5) });
+    } else {
+      const bits = buildMicroframeBitsForFrame(frame, mode);
+      sequence.push({ name: label, tones: bits.map(bit => bit ? mark : space), duration: symbolMs, gap: 0, afterGap: Math.max(40, symbolMs * 0.5) });
+    }
   }
-  const totalBits = plan.frames.reduce((sum, frame) => sum + buildMicroframeBitsForFrame(frame, mode).length, 0);
-  log('OK', `microframe carousel TX pass: ${plan.totalSlots} data slots + META/EOF, ${totalBits} bits, ${mode} mode`);
+  const totalBits = plan.frames.reduce((sum, frame) => sum + (markerMode === 'tone' ? buildToneDelimitedFrameBodyBytes(frame, mode).length * 8 : buildMicroframeBitsForFrame(frame, mode).length), 0);
+  log('OK', `microframe carousel TX pass: ${plan.totalSlots} data slots + META/EOF, ${totalBits} body bits, ${mode} mode, ${markerMode === 'tone' ? `${formatFreq(markerFreq)} tone-delimited markers` : 'legacy alternating preamble'}`);
   await playSequence(sequence, TX_STATES.PATTERN, 'microframe carousel TX');
 }
 
@@ -1742,6 +1805,12 @@ function decodeMicroframeFrom(startTime, now = performance.now()) {
 }
 
 function packetKindFromDecoded(decoded) {
+  if (decoded.delimiterMode === 'tone' && decoded.markerPattern) {
+    if (decoded.finalResult === 'BAD') return decoded.type === 'meta' ? 'meta_rejected' : 'microframe_rejected';
+    if (decoded.type === 'meta' && decoded.finalResult === 'OK') return 'meta_eof';
+    if (decoded.type === 'data' && decoded.finalResult === 'OK') return 'microframe_observation';
+    return 'marker_acquired';
+  }
   if (!decoded.preambleFound) return 'candidate_lock';
   if (decoded.type === 'candidate') return 'false_lock';
   if (decoded.finalResult === 'BAD') return decoded.type === 'meta' ? 'meta_rejected' : 'microframe_rejected';
@@ -1756,6 +1825,7 @@ function packetLabelForKind(kind, decoded) {
   if (kind === 'microframe_rejected') return `Microframe ${String(packetAttemptCount).padStart(3, '0')} rejected`;
   if (kind === 'meta_rejected') return `META/EOF ${String(packetAttemptCount).padStart(3, '0')} rejected`;
   if (kind === 'false_lock') return `Candidate ${String(packetCandidateCount).padStart(3, '0')}: false lock / wrong marker`;
+  if (kind === 'marker_acquired') return `Marker ${String(packetCandidateCount).padStart(3, '0')}: tone acquired`;
   return `Candidate ${String(packetCandidateCount).padStart(3, '0')}: candidate lock`;
 }
 
@@ -1776,6 +1846,15 @@ function makePacketLogRecord(decoded, now = performance.now()) {
     collectedBits: decoded.collectedBits,
     expectedBits: decoded.expectedBits,
     preambleMatches: decoded.preambleMatches,
+    markerFrequency: decoded.markerFrequency ?? null,
+    markerStrength: decoded.markerStrength ?? null,
+    markerDurationSeen: decoded.markerDurationSeen ?? null,
+    markerPattern: decoded.markerPattern ?? null,
+    markerStartTimestamp: decoded.markerStart ? new Date(Date.now() - (performance.now() - decoded.markerStart)).toISOString() : null,
+    markerEndTimestamp: decoded.markerEnd ? new Date(Date.now() - (performance.now() - decoded.markerEnd)).toISOString() : null,
+    guardGapMs: decoded.guardGapMs ?? null,
+    decodedFrameBodyBits: decoded.groupedBits ?? null,
+    acceptRejectReason: decoded.reason,
     syncStatus: kind === 'false_lock' ? 'wrong marker' : decoded.syncStatus,
     syncByte: syncHex,
     frameMode: decoded.mode,
@@ -1809,9 +1888,12 @@ function formatPacketDiagnostic(decoded, label = 'Decode candidate') {
   const frameHex = decoded.rawFrameBytes?.length ? decoded.rawFrameBytes.map(byte => `0x${byte.toString(16).padStart(2, '0')}`).join(' ') : '(collecting)';
   const dataLine = decoded.type === 'data' ? `Seq: ${decoded.seq}\nData bytes: ${decoded.dataBytes.map(byte => `0x${byte.toString(16).padStart(2, '0')}`).join(' ')} (${decoded.dataBytes.map(byte => sanitizeByteForDisplay(byte)).join('')})` : '';
   const metaLine = decoded.type === 'meta' ? `META/EOF: message ${decoded.messageId}, length ${decoded.length}, total slots ${decoded.totalSlots}, CRC 0x${decoded.crc.toString(16).padStart(4, '0')}` : '';
+  const lockLine = decoded.delimiterMode === 'tone'
+    ? `Tone marker: ${formatFreq(decoded.markerFrequency)} ${decoded.markerPattern || 'unknown'}, strength ${percent(decoded.markerStrength || 0)}, duration ${Math.round(decoded.markerDurationSeen || 0)} ms, guard ${decoded.guardGapMs ?? PACKET_MARKER_GUARD_MS} ms`
+    : `Preamble: ${decoded.preambleFound ? 'found' : decoded.collectedBits ? 'partial' : 'missing'} (${decoded.preambleMatches}/${decoded.preambleBits} alternating symbols matched)
+Marker: ${decoded.syncStatus}${decoded.syncByte === null || decoded.syncByte === undefined ? '' : ` (${decoded.syncByte === MICROFRAME_DATA_SYNC ? 'data' : decoded.syncByte === MICROFRAME_META_SYNC ? 'META/EOF' : 'unknown'} 0x${decoded.syncByte.toString(16).padStart(2, '0')})`}`;
   return `${label}
-Preamble: ${decoded.preambleFound ? 'found' : decoded.collectedBits ? 'partial' : 'missing'} (${decoded.preambleMatches}/${decoded.preambleBits} alternating symbols matched)
-Marker: ${decoded.syncStatus}${decoded.syncByte === null || decoded.syncByte === undefined ? '' : ` (${decoded.syncByte === MICROFRAME_DATA_SYNC ? 'data' : decoded.syncByte === MICROFRAME_META_SYNC ? 'META/EOF' : 'unknown'} 0x${decoded.syncByte.toString(16).padStart(2, '0')})`}
+${lockLine}
 Frame mode: ${decoded.mode}
 Frame type: ${decoded.type}
 ${dataLine}${dataLine && metaLine ? '\n' : ''}${metaLine}
@@ -1830,6 +1912,152 @@ Assembly: ${microframeRx.lastStateLine}`;
 
 function average(values) {
   return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+}
+
+
+function markerStrengthForSample(sample, markerFreq = getPacketMarkerFreq()) {
+  return Math.min(1, ((sample.meta?.energyMap?.[markerFreq]) || 0) / STRONG_ENERGY);
+}
+
+function findToneMarkerCandidate(now) {
+  const markerFreq = getPacketMarkerFreq();
+  const lookbackStart = Math.max(packetRxArmTime, packetSeenUntil, now - 6000);
+  const samples = traceBuffer.filter(sample => sample.timestamp >= lookbackStart && sample.timestamp <= now);
+  if (!samples.length) return { state: 'watching marker tone', reason: 'no recent detector samples', markerFrequency: markerFreq };
+  const runs = [];
+  let run = null;
+  for (const sample of samples) {
+    const strength = markerStrengthForSample(sample, markerFreq);
+    const on = strength >= PACKET_MARKER_THRESHOLD;
+    if (on) {
+      if (!run || sample.timestamp - run.end > DETECT_INTERVAL_MS * 2.5) {
+        if (run) runs.push(run);
+        run = { start: sample.timestamp, end: sample.timestamp, strengths: [strength] };
+      } else {
+        run.end = sample.timestamp;
+        run.strengths.push(strength);
+      }
+    } else if (run && sample.timestamp - run.end > DETECT_INTERVAL_MS * 2.5) {
+      runs.push(run);
+      run = null;
+    }
+  }
+  if (run) runs.push(run);
+  const completeRuns = runs
+    .map(item => ({ ...item, duration: item.end - item.start + DETECT_INTERVAL_MS, strength: average(item.strengths) }))
+    .filter(item => item.duration >= PACKET_MARKER_MIN_MS && item.start > packetLastMarkerStart + PACKET_MARKER_SPLIT_MS);
+  if (!completeRuns.length) {
+    const bestStrength = Math.max(0, ...samples.map(sample => markerStrengthForSample(sample, markerFreq)));
+    return { state: bestStrength >= PACKET_MARKER_THRESHOLD ? 'marker tone rising' : 'watching marker tone', reason: 'waiting for a complete frame marker pulse', markerFrequency: markerFreq, markerStrength: bestStrength };
+  }
+  for (let index = 0; index < completeRuns.length; index++) {
+    const first = completeRuns[index];
+    const second = completeRuns[index + 1];
+    if (second) {
+      const gap = second.start - first.end;
+      if (gap >= 45 && gap <= PACKET_MARKER_META_MAX_GAP_MS) {
+        const markerEnd = second.end;
+        if (now < markerEnd + PACKET_MARKER_GUARD_MS) return { state: 'META/EOF marker acquired', reason: 'waiting through guard gap', markerFrequency: markerFreq, markerStart: first.start, markerEnd, markerPattern: 'META', markerStrength: average([first.strength, second.strength]), markerDurationSeen: (first.end - first.start) + (second.end - second.start) + gap };
+        return { markerFrequency: markerFreq, markerStart: first.start, markerEnd, markerPattern: 'META', markerStrength: average([first.strength, second.strength]), markerDurationSeen: (first.end - first.start) + (second.end - second.start) + gap, guardGapMs: PACKET_MARKER_GUARD_MS, accepted: true, reason: 'two-pulse META/EOF marker acquired' };
+      }
+    }
+    if (now < first.end + PACKET_MARKER_META_MAX_GAP_MS) {
+      return { state: 'DATA marker acquired', reason: 'waiting briefly to rule out second META/EOF pulse', markerFrequency: markerFreq, markerStart: first.start, markerEnd: first.end, markerPattern: 'unknown', markerStrength: first.strength, markerDurationSeen: first.duration };
+    }
+    if (now < first.end + PACKET_MARKER_GUARD_MS) {
+      return { state: 'DATA marker acquired', reason: 'waiting through guard gap', markerFrequency: markerFreq, markerStart: first.start, markerEnd: first.end, markerPattern: 'DATA', markerStrength: first.strength, markerDurationSeen: first.duration };
+    }
+    return { markerFrequency: markerFreq, markerStart: first.start, markerEnd: first.end, markerPattern: 'DATA', markerStrength: first.strength, markerDurationSeen: first.duration, guardGapMs: PACKET_MARKER_GUARD_MS, accepted: true, reason: 'single-pulse DATA marker acquired' };
+  }
+  return { state: 'watching marker tone', reason: 'no usable marker pattern yet', markerFrequency: markerFreq };
+}
+
+function decodeToneDelimitedMicroframe(marker, now = performance.now()) {
+  const mark = Number(els.packetMark.value);
+  const space = Number(els.packetSpace.value);
+  const symbolMs = Number(els.packetSymbol.value);
+  const mode = getPacketFrameMode();
+  const markerPattern = marker.markerPattern || 'unknown';
+  const expectedFrameBytes = markerPattern === 'META' ? (mode === 'checked' ? 6 : 5) : (mode === 'checked' ? 4 : 3);
+  const startTime = marker.markerEnd + PACKET_MARKER_GUARD_MS;
+  const bits = [];
+  const uncertain = [];
+  const missing = [];
+  const confidences = [];
+  for (let index = 0; index < expectedFrameBytes * 8; index++) {
+    const guard = symbolGuardMs(symbolMs);
+    const start = startTime + index * symbolMs + guard;
+    const end = startTime + (index + 1) * symbolMs - guard;
+    if (now < end) break;
+    const classified = classifySymbolWindow(start, end, mark, space);
+    const position = index + 1;
+    if (classified.missing) { missing.push(position); break; }
+    bits.push(classified.bit);
+    confidences.push(classified.confidence);
+    if (classified.confidence < 0.18 || Math.max(classified.markAvg, classified.spaceAvg) < 0.10) uncertain.push(position);
+  }
+  const rawFrameBytes = [];
+  for (let i = 0; i + 7 < bits.length; i += 8) rawFrameBytes.push(bitsToByte(bits.slice(i, i + 8)));
+  const decoded = decodeToneDelimitedFrameBytes(rawFrameBytes, markerPattern, mode);
+  return decorateToneDelimitedDecoded(decoded, { bits, rawFrameBytes, uncertain, missing, confidences, marker, expectedFrameBytes, now, startTime, mode });
+}
+
+function decodeToneDelimitedFrameBytes(bytes, markerPattern, mode = getPacketFrameMode()) {
+  const checked = mode === 'checked';
+  if (markerPattern === 'META') {
+    const needed = checked ? 6 : 5;
+    if (bytes.length < needed) return { type: 'meta', finalResult: 'PARTIAL', reason: 'META/EOF fields still collecting' };
+    const [messageId, length, totalSlots, crcLo, crcHi] = bytes.slice(0, 5);
+    const crc = crcLo | (crcHi << 8);
+    const expectedCheck = (messageId ^ length ^ totalSlots ^ crcLo ^ crcHi) & 0xff;
+    const receivedCheck = checked ? bytes[5] : null;
+    const checkPassed = !checked || receivedCheck === expectedCheck;
+    return { type: 'meta', messageId, length, totalSlots, crc, expectedCheck, receivedCheck, checkPassed, finalResult: checkPassed ? 'OK' : 'BAD', reason: checkPassed ? 'META/EOF accepted from tone marker' : 'META/EOF check byte failed' };
+  }
+  const needed = checked ? 4 : 3;
+  if (bytes.length < needed) return { type: 'data', finalResult: 'PARTIAL', reason: 'data microframe fields still collecting' };
+  const [seq, byte0, byte1] = bytes.slice(0, 3);
+  const expectedCheck = (seq ^ byte0 ^ byte1) & 0xff;
+  const receivedCheck = checked ? bytes[3] : null;
+  const checkPassed = !checked || receivedCheck === expectedCheck;
+  return { type: 'data', seq, dataBytes: [byte0, byte1], expectedCheck, receivedCheck, checkPassed, finalResult: checkPassed ? 'OK' : 'BAD', reason: checkPassed ? 'microframe observation accepted from tone marker' : 'per-frame check byte failed' };
+}
+
+function decorateToneDelimitedDecoded(decoded, details) {
+  const { bits, rawFrameBytes, uncertain, missing, confidences, marker, expectedFrameBytes, startTime, mode } = details;
+  const expectedBits = expectedFrameBytes * 8;
+  return {
+    ...decoded,
+    bits,
+    groupedBits: bits.map((bit, index) => missing.includes(index + 1) ? '·' : uncertain.includes(index + 1) ? '?' : String(bit)).join('').replace(/(.{8})/g, '$1 ').trim(),
+    preambleFound: false,
+    preambleMatches: 0,
+    preambleBits: 0,
+    syncStatus: 'tone marker',
+    syncByte: null,
+    marker,
+    markerFrequency: marker.markerFrequency,
+    markerStrength: marker.markerStrength ?? 0,
+    markerDurationSeen: marker.markerDurationSeen ?? 0,
+    markerPattern: marker.markerPattern || 'unknown',
+    markerStart: marker.markerStart,
+    markerEnd: marker.markerEnd,
+    guardGapMs: PACKET_MARKER_GUARD_MS,
+    bodyStart: startTime,
+    rawFrameBytes,
+    expectedBits,
+    collectedBits: bits.length,
+    frameBytesCollected: rawFrameBytes.length,
+    expectedFrameBytes,
+    coverage: bits.length / Math.max(1, expectedBits),
+    confidence: average(confidences),
+    uncertain,
+    missing,
+    complete: rawFrameBytes.length >= expectedFrameBytes,
+    checkStatus: decoded.checkPassed === undefined ? 'not used' : decoded.checkPassed ? 'OK' : 'BAD',
+    mode,
+    delimiterMode: 'tone'
+  };
 }
 
 function packetPreambleProgress(now) {
@@ -1900,6 +2128,44 @@ Partial assembly remains visible while waiting; one bad frame does not reset slo
 }
 
 function scanPackets(now) {
+  if (getPacketMarkerMode() === 'legacy') {
+    scanLegacyPreamblePackets(now);
+    return;
+  }
+  scanToneDelimitedPackets(now);
+}
+
+function scanToneDelimitedPackets(now) {
+  if (now < packetSeenUntil) return;
+  const marker = findToneMarkerCandidate(now);
+  if (!marker.accepted) {
+    updateToneMarkerWaiting(now, marker);
+    return;
+  }
+  packetRxState = marker.markerPattern === 'META' ? 'decoding META/EOF body' : 'decoding DATA body';
+  updatePacketControlLabels();
+  const decoded = decodeToneDelimitedMicroframe(marker, now);
+  if (!decoded.complete) {
+    updateToneMarkerWaiting(now, { ...marker, state: packetRxState, reason: decoded.reason, decoded });
+    return;
+  }
+  packetLastMarkerStart = marker.markerStart;
+  packetSeenUntil = marker.markerEnd + PACKET_MARKER_GUARD_MS + decoded.expectedBits * Number(els.packetSymbol.value) + Number(els.packetSymbol.value) * 0.75;
+  packetRxArmTime = Math.max(packetRxArmTime, marker.markerEnd);
+  if (decoded.finalResult === 'OK') observeMicroframe(decoded, now);
+  const record = addPacketLogRecord(decoded, now);
+  const status = decoded.finalResult;
+  const seqLine = decoded.type === 'data' ? `Seq ${decoded.seq}, bytes ${decoded.dataBytes.map(byte => `0x${byte.toString(16).padStart(2, '0')}`).join(' ')} (${decoded.dataBytes.map(byte => sanitizeByteForDisplay(byte)).join('')})` : decoded.type === 'meta' ? `META/EOF length ${decoded.length}, slots ${decoded.totalSlots}, CRC 0x${decoded.crc.toString(16).padStart(4, '0')}` : 'No trusted marker yet';
+  setPacketLiveStatus(`${record.label}: ${record.kind}
+Marker: ${formatFreq(decoded.markerFrequency)} ${decoded.markerPattern}, strength ${percent(decoded.markerStrength)}, guard ${decoded.guardGapMs} ms
+${seqLine}
+Per-frame check: ${record.perFrameCheck}
+Reason: ${record.reason}
+Assembly: ${microframeRx.lastStateLine}`);
+  log(status === 'OK' ? 'OK' : 'WARN', `tone-delimited microframe RX ${record.kind}: ${decoded.reason}`);
+}
+
+function scanLegacyPreamblePackets(now) {
   if (now < packetSeenUntil) return;
   const start = findPacketPreamble(now);
   if (!start) { updatePacketWaiting(now); return; }
@@ -1919,6 +2185,24 @@ Per-frame check: ${record.perFrameCheck}
 Reason: ${record.reason}
 Assembly: ${microframeRx.lastStateLine}`);
   log(status === 'OK' ? 'OK' : status === 'BAD' ? 'WARN' : status === 'NO LOCK' ? 'WARN' : 'WARN', `microframe RX ${record.kind}: ${decoded.reason}`);
+}
+
+function updateToneMarkerWaiting(now, progress = {}) {
+  if (now - packetRxProgressLast < 500) return;
+  packetRxProgressLast = now;
+  const mark = Number(els.packetMark.value);
+  const space = Number(els.packetSpace.value);
+  packetRxState = progress.state || 'watching marker tone';
+  updatePacketControlLabels();
+  setPacketLiveStatus(`Tone-delimited Microframe RX armed
+RX mode: ${isListening ? 'listening' : 'not listening'} → ${packetRxState}
+Frame marker: ${formatFreq(getPacketMarkerFreq())}, strength ${percent(progress.markerStrength || 0)}, pattern ${progress.markerPattern || 'none'}
+Data frequencies: mark ${formatFreq(mark)}, space ${formatFreq(space)}
+Frame mode: ${getPacketFrameMode()}
+Marker guard gap: ${PACKET_MARKER_GUARD_MS} ms
+Current detected peak: ${formatFreq(currentPeak)}
+Why not decoding: ${progress.reason || 'waiting for a complete marker event'}
+Partial assembly remains visible while waiting; bad/missed markers do not reset slots.`);
 }
 
 function runPacketSelfTest() {
@@ -1954,13 +2238,17 @@ function currentPacketSessionSettings() {
     detectorIntervalMs: DETECT_INTERVAL_MS,
     loopGapSeconds: Number(els.packetInterval.value),
     frameMode: getPacketFrameMode(),
+    markerMode: getPacketMarkerMode(),
+    frameMarkerFrequency: getPacketMarkerFreq(),
+    markerDurationMs: getPacketMarkerDurationMs(),
+    markerGuardGapMs: PACKET_MARKER_GUARD_MS,
     dataBytesPerSlot: MICROFRAME_BYTES_PER_SLOT,
     dataSyncMarker: `0x${MICROFRAME_DATA_SYNC.toString(16).padStart(2, '0')}`,
     metaEofMarker: `0x${MICROFRAME_META_SYNC.toString(16).padStart(2, '0')}`,
     assembly: microframeRx.lastStateLine,
     assembledTextState: microframeRx.lastAssembledText,
-    preambleBits: PACKET_PREAMBLE_BITS.length,
-    syncByte: `0x${PACKET_SYNC_BYTE.toString(16).padStart(2, '0')}`,
+    legacyPreambleBits: PACKET_PREAMBLE_BITS.length,
+    syncByte: getPacketMarkerMode() === 'legacy' ? `0x${PACKET_SYNC_BYTE.toString(16).padStart(2, '0')}` : null,
     retainedEntryLimit: PACKET_LOG_LIMIT
   };
 }
@@ -1992,7 +2280,8 @@ function exportPacketLogs() {
   const exportPayload = {
     exportedAt: new Date().toISOString(),
     terminology: {
-      candidateLock: 'preamble-ish detection, not yet trusted',
+      candidateLock: 'legacy preamble-ish detection, not yet trusted',
+      markerAcquisition: '14 kHz out-of-band event that starts a tone-delimited microframe',
       microframe: 'one small seq/data or META/EOF unit',
       observation: 'heard value for a sequence slot',
       slot: 'receiver storage position for seq N',
@@ -2101,6 +2390,9 @@ function attachEvents() {
   });
   els.packetMark.addEventListener('change', () => { packetFreqTouched = true; });
   els.packetSpace.addEventListener('change', () => { packetFreqTouched = true; });
+  els.packetMarkerFreq.addEventListener('change', () => { packetFreqTouched = true; resetPacketRxParser(); log('OK', `frame marker frequency set to ${formatFreq(getPacketMarkerFreq())}`); });
+  els.packetMarkerDuration.addEventListener('change', () => { log('OK', `frame marker duration set to ${getPacketMarkerDurationMs()} ms`); });
+  els.packetMarkerMode.addEventListener('change', () => { resetPacketRxParser({ clearLog: packetRxActive }); log('OK', `microframe marker mode set to ${getPacketMarkerMode()}`); updatePacketControlLabels(); });
   els.packetFrameMode.addEventListener('change', () => { resetMicroframeAssembly(); log('OK', `microframe frame mode set to ${getPacketFrameMode()}`); });
   els.packetText.addEventListener('input', () => { microframeMessageId = (microframeMessageId + 1) & 0xff; });
   els.sendPacket.addEventListener('click', () => sendPacketOnce());
@@ -2129,7 +2421,7 @@ function attachEvents() {
     packetRxActive = true;
     els.packetRx.classList.add('active');
     resetPacketRxParser({ clearLog: true });
-    setPacketLiveStatus('Microframe RX armed; assembly fresh and waiting for a candidate lock. Trace/activity continue updating.');
+    setPacketLiveStatus('Microframe RX armed; assembly fresh and watching for 14 kHz tone-delimited frame markers. Trace/activity continue updating.');
     updatePacketControlLabels();
     log('OK', 'microframe receiver armed with fresh assembly state');
   });
