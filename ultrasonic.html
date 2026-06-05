@@ -6,25 +6,29 @@
   <title>Ultrasonic Playground</title>
   <style>
     :root {
-      color-scheme: light;
-      --bg: #f4f1eb;
-      --panel: #fffdf7;
-      --ink: #222520;
-      --muted: #687069;
-      --line: #d6d0c6;
-      --soft: #ebe5da;
-      --accent: #45635c;
-      --accent-strong: #254a43;
-      --good: #47735d;
-      --weak: #9c7a35;
-      --bad: #9a5a4f;
+      color-scheme: dark;
+      --bg: #08111d;
+      --bg-glow: #0e2135;
+      --panel: #101a27;
+      --panel-soft: #142233;
+      --ink: #e7eef7;
+      --muted: #93a4b7;
+      --line: #26394c;
+      --soft: #1b2b3e;
+      --accent: #36b9e6;
+      --accent-strong: #72d7ff;
+      --trace: #48c7f4;
+      --good: #74d99a;
+      --weak: #e5bc62;
+      --bad: #d47878;
+      --waiting: #7f91a6;
     }
 
     * { box-sizing: border-box; }
 
     body {
       margin: 0;
-      background: radial-gradient(circle at top, #fbfaf6 0, var(--bg) 42rem);
+      background: radial-gradient(circle at top, var(--bg-glow) 0, var(--bg) 34rem);
       color: var(--ink);
       font: 15px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
@@ -36,10 +40,10 @@
     }
 
     header, section {
-      background: rgba(255, 253, 247, 0.92);
+      background: color-mix(in srgb, var(--panel) 94%, transparent);
       border: 1px solid var(--line);
       border-radius: 16px;
-      box-shadow: 0 1px 2px rgba(30, 26, 20, 0.04);
+      box-shadow: 0 18px 45px rgba(0, 0, 0, 0.16);
       margin: 0 0 1rem;
       padding: 1rem;
     }
@@ -51,22 +55,23 @@
     p, .hint, .status, output { color: var(--muted); }
     a { color: var(--accent-strong); }
 
-    button, input { font: inherit; }
+    button, input, select { font: inherit; }
 
-    button {
-      border: 1px solid #9aa99f;
+    button, select {
+      border: 1px solid #38536a;
       border-radius: 999px;
-      background: #eef2ed;
+      background: #172638;
       color: var(--ink);
       cursor: pointer;
       padding: 0.52rem 0.82rem;
-      transition: background 0.12s ease, border-color 0.12s ease;
+      transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
     }
 
-    button:hover { background: #e4ebe5; border-color: #7f9288; }
-    button.primary { background: var(--accent); border-color: var(--accent); color: white; }
-    button.primary:hover { background: var(--accent-strong); }
-    button[aria-pressed="true"], button.active { background: var(--accent-strong); color: white; border-color: var(--accent-strong); }
+    select { border-radius: 10px; min-width: 11rem; }
+    button:hover, select:hover { background: #1d3148; border-color: #4a6d89; }
+    button.primary { background: #126486; border-color: #208fbd; color: white; }
+    button.primary:hover { background: #1679a1; }
+    button[aria-pressed="true"], button.active { background: #1d82aa; color: white; border-color: var(--accent); }
     button:disabled { opacity: 0.55; cursor: not-allowed; }
 
     .row, .tone-row, .control-row {
@@ -98,7 +103,7 @@
       position: relative;
       border: 1px solid var(--line);
       border-radius: 14px;
-      background: linear-gradient(180deg, #fffefa, #faf7ef);
+      background: #0b1420;
       overflow: hidden;
       touch-action: none;
     }
@@ -107,6 +112,7 @@
 
     .trace-caption {
       align-items: center;
+      background: #0d1825;
       border-top: 1px solid var(--line);
       display: flex;
       gap: 0.65rem;
@@ -123,7 +129,7 @@
 
     .activity-bin { color: var(--muted); font-size: 0.82rem; }
     .bar-track { background: var(--soft); border-radius: 999px; height: 0.45rem; overflow: hidden; }
-    .bar-fill { background: var(--accent); height: 100%; width: 0%; opacity: 0.8; }
+    .bar-fill { background: linear-gradient(90deg, #227fa4, var(--accent)); height: 100%; width: 0%; opacity: 0.86; }
 
     .results, .log {
       display: grid;
@@ -132,7 +138,7 @@
 
     .result-row, .log-row {
       align-items: center;
-      border-bottom: 1px solid #eee7dc;
+      border-bottom: 1px solid var(--line);
       display: grid;
       gap: 0.7rem;
       grid-template-columns: 4.5rem 1fr auto;
@@ -148,10 +154,12 @@
       text-transform: uppercase;
     }
 
-    .pass { background: #e0ece4; color: var(--good); }
-    .weak { background: #f2ead1; color: var(--weak); }
-    .fail, .bad { background: #f3dfdc; color: var(--bad); }
-    .ok { background: #e0ece4; color: var(--good); }
+    .pass { background: rgba(116, 217, 154, 0.14); color: var(--good); }
+    .weak, .warn { background: rgba(229, 188, 98, 0.14); color: var(--weak); }
+    .fail, .bad { background: rgba(212, 120, 120, 0.12); color: var(--bad); }
+    .ok { background: rgba(116, 217, 154, 0.14); color: var(--good); }
+    .waiting { background: rgba(127, 145, 166, 0.12); color: var(--waiting); }
+    .running { background: rgba(54, 185, 230, 0.14); color: var(--accent-strong); }
 
     .grid { display: grid; gap: 1rem; grid-template-columns: 1fr; }
 
@@ -178,6 +186,15 @@
       <label>Volume: <output id="volumeOut">45%</output>
         <input id="volume" type="range" min="0" max="1" step="0.01" value="0.45">
       </label>
+      <label>Symbol Length / Rate: <output id="symbolOut">Normal — 200 ms (5.0 sym/s)</output>
+        <select id="symbolLength">
+          <option value="500">Very slow — 500 ms</option>
+          <option value="300">Slow — 300 ms</option>
+          <option value="200" selected>Normal — 200 ms</option>
+          <option value="120">Fast — 120 ms</option>
+          <option value="80">Reckless — 80 ms</option>
+        </select>
+      </label>
     </div>
     <div class="row">
       <button id="playTone" class="primary">Play Tone</button>
@@ -193,6 +210,14 @@
       <button id="listen" class="primary">Start Listening</button>
       <button id="syncRx">Sync RX</button>
       <button id="liveBtn">Live</button>
+      <label>Trace gain
+        <select id="traceGain">
+          <option value="1">1x</option>
+          <option value="2" selected>2x</option>
+          <option value="4">4x</option>
+          <option value="8">8x</option>
+        </select>
+      </label>
     </div>
     <p class="status" id="status">Status: not listening | peak -- | strength 0% | idle</p>
 
@@ -237,6 +262,23 @@ const HISTORY_MS = 90000;
 const TRACE_WINDOW_MS = 30000;
 const DETECT_INTERVAL_MS = 70;
 const STRONG_ENERGY = 0.018;
+const FADE_MS = 18;
+const SYNC_GAP_MS = 90;
+const EDGE_IGNORE_MS = 50;
+const TX_STATES = {
+  IDLE: 'txIdle',
+  TONE: 'txPlayingTone',
+  SWEEP: 'txPlayingSweep',
+  PATTERN: 'txPlayingPattern',
+  SYNC: 'txSyncRunning'
+};
+const SYMBOL_PRESETS = {
+  500: 'Very slow',
+  300: 'Slow',
+  200: 'Normal',
+  120: 'Fast',
+  80: 'Reckless'
+};
 const canvas = document.getElementById('trace');
 const ctx = canvas.getContext('2d');
 const els = {
@@ -245,6 +287,8 @@ const els = {
   durationOut: document.getElementById('durationOut'),
   volume: document.getElementById('volume'),
   volumeOut: document.getElementById('volumeOut'),
+  symbolLength: document.getElementById('symbolLength'),
+  symbolOut: document.getElementById('symbolOut'),
   playTone: document.getElementById('playTone'),
   playSweep: document.getElementById('playSweep'),
   playPattern: document.getElementById('playPattern'),
@@ -252,6 +296,7 @@ const els = {
   listen: document.getElementById('listen'),
   syncRx: document.getElementById('syncRx'),
   liveBtn: document.getElementById('liveBtn'),
+  traceGain: document.getElementById('traceGain'),
   status: document.getElementById('status'),
   traceShell: document.getElementById('traceShell'),
   viewState: document.getElementById('viewState'),
@@ -274,22 +319,43 @@ let drag = null;
 let currentPeak = null;
 let currentStrength = 0;
 let modeLabel = 'idle';
+let txState = TX_STATES.IDLE;
+let txGeneration = 0;
+let txActiveNodes = [];
 let syncRxActive = false;
 let syncStartTime = 0;
 let syncResults = [];
 
-const SYNC_SEQUENCE = [
-  { name: '14 kHz carrier', tones: [14000], duration: 500 },
-  { name: '15 kHz carrier', tones: [15000], duration: 500 },
-  { name: '16 kHz carrier', tones: [16000], duration: 500 },
-  { name: '17 kHz carrier', tones: [17000], duration: 500 },
-  { name: '18 kHz carrier', tones: [18000], duration: 500 },
-  { name: '19 kHz carrier', tones: [19000], duration: 500 },
-  { name: '16/18 kHz alternating, 200 ms', tones: [16000, 18000, 16000, 18000], duration: 200 },
-  { name: '16/18 kHz alternating, 100 ms', tones: [16000, 18000, 16000, 18000], duration: 100 },
-  { name: 'Known bit pattern 10101010', tones: [18000, 16000, 18000, 16000, 18000, 16000, 18000, 16000], duration: 120 },
-  { name: 'Payload SYNC TEST 123', tones: [16000, 18000, 18000, 16000, 17000, 18000], duration: 140 }
-];
+function getSelectedSymbolMs() {
+  return Number(els.symbolLength.value);
+}
+
+function rateLabel(ms) {
+  return `${(1000 / ms).toFixed(ms >= 200 ? 1 : 1)} sym/s`;
+}
+
+function getSyncSequence() {
+  const selected = getSelectedSymbolMs();
+  return [
+    ...TONES.map(freq => ({ category: 'carrier', name: `${freq / 1000} kHz carrier`, tones: [freq], duration: 500, gap: SYNC_GAP_MS })),
+    ...[500, 300, 200, 120, 80].map(ms => ({
+      category: 'timing',
+      symbolMs: ms,
+      name: `16/18 kHz alternating, ${ms} ms`,
+      tones: [16000, 18000, 16000, 18000, 16000, 18000],
+      duration: ms,
+      gap: SYNC_GAP_MS
+    })),
+    {
+      category: 'pattern',
+      symbolMs: selected,
+      name: `Known bit pattern 10101010, ${selected} ms`,
+      tones: [18000, 16000, 18000, 16000, 18000, 16000, 18000, 16000],
+      duration: selected,
+      gap: SYNC_GAP_MS
+    }
+  ];
+}
 
 function ensureAudioContext() {
   audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
@@ -321,7 +387,10 @@ function buildControls() {
     const button = document.createElement('button');
     button.textContent = `${freq / 1000}k`;
     button.dataset.freq = String(freq);
-    button.addEventListener('click', () => setSelectedTone(freq));
+    button.addEventListener('click', () => {
+      setSelectedTone(freq);
+      if (txState === TX_STATES.TONE) playTone(freq, Number(els.duration.value));
+    });
     els.toneButtons.append(button);
   }
   setSelectedTone(selectedTone);
@@ -335,44 +404,116 @@ function buildControls() {
 }
 
 function updateSliderLabels() {
+  const symbolMs = getSelectedSymbolMs();
   els.durationOut.textContent = `${els.duration.value} ms`;
   els.volumeOut.textContent = `${Math.round(Number(els.volume.value) * 100)}%`;
+  els.symbolOut.textContent = `${SYMBOL_PRESETS[symbolMs]} — ${symbolMs} ms (${rateLabel(symbolMs)})`;
+  if (!syncRxActive) renderResults();
 }
 
-function playTone(freq, durationMs, label = 'manual tone') {
-  const ac = ensureAudioContext();
-  const osc = ac.createOscillator();
-  const gain = ac.createGain();
-  const now = ac.currentTime;
-  const duration = durationMs / 1000;
-  osc.frequency.value = freq;
-  gain.gain.setValueAtTime(0, now);
-  gain.gain.linearRampToValueAtTime(Number(els.volume.value), now + 0.015);
-  gain.gain.setValueAtTime(Number(els.volume.value), now + Math.max(0.016, duration - 0.025));
-  gain.gain.linearRampToValueAtTime(0, now + duration);
-  osc.connect(gain).connect(ac.destination);
-  osc.start(now);
-  osc.stop(now + duration + 0.03);
-  modeLabel = label;
-  log('OK', `TX ${formatFreq(freq)} for ${durationMs} ms`);
+function setTxState(state, label = state) {
+  txState = state;
+  modeLabel = state === TX_STATES.IDLE ? 'idle' : label;
 }
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-async function playSequence(sequence, label) {
-  modeLabel = label;
-  for (const step of sequence) {
-    modeLabel = `TX ${step.name}`;
-    for (const tone of step.tones) {
-      playTone(tone, step.duration, modeLabel);
-      await sleep(step.duration + 70);
+function stopTx(fadeMs = FADE_MS) {
+  txGeneration += 1;
+  const hadNodes = txActiveNodes.length > 0;
+  const ac = audioCtx;
+  if (ac) {
+    const now = ac.currentTime;
+    const fade = fadeMs / 1000;
+    for (const node of txActiveNodes) {
+      try {
+        node.gain.gain.cancelScheduledValues(now);
+        node.gain.gain.setValueAtTime(node.gain.gain.value, now);
+        node.gain.gain.linearRampToValueAtTime(0, now + fade);
+        node.osc.stop(now + fade + 0.02);
+      } catch (_) {
+        // Nodes may already be stopping; cleanup still happens via onended.
+      }
     }
-    await sleep(180);
   }
-  modeLabel = 'idle';
-  log('OK', `${label} complete`);
+  txActiveNodes = [];
+  setTxState(TX_STATES.IDLE);
+  return { token: txGeneration, hadNodes };
+}
+
+function registerTxNode(osc, gain) {
+  const node = { osc, gain };
+  txActiveNodes.push(node);
+  osc.onended = () => {
+    try { osc.disconnect(); } catch (_) {}
+    try { gain.disconnect(); } catch (_) {}
+    txActiveNodes = txActiveNodes.filter(item => item !== node);
+  };
+}
+
+function scheduleToneSegment(freq, durationMs, token, label) {
+  return new Promise(resolve => {
+    if (token !== txGeneration) { resolve(false); return; }
+    const ac = ensureAudioContext();
+    const osc = ac.createOscillator();
+    const gain = ac.createGain();
+    const now = ac.currentTime;
+    const duration = Math.max(durationMs / 1000, 0.04);
+    const fade = Math.min(FADE_MS / 1000, duration / 3);
+    const volume = Number(els.volume.value);
+    osc.frequency.setValueAtTime(freq, now);
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(volume, now + fade);
+    gain.gain.setValueAtTime(volume, now + Math.max(fade, duration - fade));
+    gain.gain.linearRampToValueAtTime(0, now + duration);
+    osc.connect(gain).connect(ac.destination);
+    registerTxNode(osc, gain);
+    osc.start(now);
+    osc.stop(now + duration + 0.025);
+    modeLabel = label;
+    setTimeout(() => resolve(token === txGeneration), durationMs + FADE_MS + 25);
+  });
+}
+
+async function playTone(freq, durationMs, label = 'manual tone') {
+  const stopped = stopTx();
+  if (stopped.hadNodes) {
+    await sleep(FADE_MS + 25);
+    if (stopped.token !== txGeneration) return;
+  }
+  const token = txGeneration;
+  setTxState(TX_STATES.TONE, label);
+  log('OK', `TX ${formatFreq(freq)} for ${durationMs} ms`);
+  await scheduleToneSegment(freq, durationMs, token, label);
+  if (token === txGeneration) setTxState(TX_STATES.IDLE);
+}
+
+function sleep(ms, token) {
+  return new Promise(resolve => {
+    setTimeout(() => resolve(token === undefined || token === txGeneration), ms);
+  });
+}
+
+async function playSequence(sequence, state, label) {
+  const stopped = stopTx();
+  if (stopped.hadNodes) {
+    await sleep(FADE_MS + 25);
+    if (stopped.token !== txGeneration) return;
+  }
+  const token = txGeneration;
+  setTxState(state, label);
+  for (const step of sequence) {
+    if (token !== txGeneration) return;
+    for (const tone of step.tones) {
+      const stepLabel = `TX ${step.name}`;
+      await scheduleToneSegment(tone, step.duration, token, stepLabel);
+      if (token !== txGeneration) return;
+      await sleep(step.gap ?? SYNC_GAP_MS, token);
+    }
+    await sleep(step.afterGap ?? SYNC_GAP_MS, token);
+  }
+  if (token === txGeneration) {
+    setTxState(TX_STATES.IDLE);
+    log('OK', `${label} complete`);
+  }
 }
 
 async function startListening() {
@@ -471,11 +612,11 @@ function drawTrace() {
   const start = end - TRACE_WINDOW_MS;
 
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = '#fffdf7';
+  ctx.fillStyle = '#09131f';
   ctx.fillRect(0, 0, width, height);
-  ctx.strokeStyle = '#e6dfd4';
+  ctx.strokeStyle = '#1f3042';
   ctx.lineWidth = 1 * dpr;
-  ctx.fillStyle = '#687069';
+  ctx.fillStyle = '#7f91a6';
   ctx.font = `${12 * dpr}px system-ui`;
   ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
@@ -487,7 +628,7 @@ function drawTrace() {
     ctx.stroke();
     ctx.fillText(`${freq / 1000}k`, plot.left - 10 * dpr, y);
   }
-  ctx.strokeStyle = '#cfc7ba';
+  ctx.strokeStyle = '#31485f';
   ctx.beginPath();
   ctx.moveTo(plot.left, plot.top);
   ctx.lineTo(plot.left, plot.bottom);
@@ -501,8 +642,9 @@ function drawTrace() {
     const gap = sample.timestamp - prev.timestamp;
     const strength = (sample.strength + prev.strength) / 2;
     if (gap > DETECT_INTERVAL_MS * 2.5) continue;
-    ctx.strokeStyle = `rgba(53, 95, 86, ${0.18 + strength * 0.72})`;
-    ctx.lineWidth = (1.2 + strength * 5.2) * dpr;
+    const visualStrength = Math.min(1, Math.sqrt(strength * Number(els.traceGain.value)));
+    ctx.strokeStyle = `rgba(72, 199, 244, ${0.28 + visualStrength * 0.62})`;
+    ctx.lineWidth = (2 + visualStrength * 6) * dpr;
     ctx.lineCap = 'round';
     ctx.beginPath();
     ctx.moveTo(xForTime(prev.timestamp, start, plot), yForFrequency(prev.frequency, plot));
@@ -511,7 +653,7 @@ function drawTrace() {
   }
 
   ctx.textAlign = 'center';
-  ctx.fillStyle = '#8b897f';
+  ctx.fillStyle = '#6e8196';
   ctx.fillText('time →', plot.left + plot.width / 2, height - 18 * dpr);
   els.viewState.textContent = liveMode ? 'live scrolling' : `viewing ${Math.round(viewOffsetMs / 1000)}s ago`;
 }
@@ -525,31 +667,59 @@ function updateActivityBars() {
 
 function updateStatus() {
   const listenText = isListening ? 'listening' : 'not listening';
-  els.status.textContent = `Status: ${listenText} | peak ${formatFreq(currentPeak)} | strength ${Math.round(currentStrength * 100)}% | ${modeLabel}`;
+  els.status.textContent = `Status: ${listenText} | peak ${formatFreq(currentPeak)} | strength ${Math.round(currentStrength * 100)}% | TX ${txState} | ${modeLabel}`;
+}
+
+function syncPlanWithStates() {
+  const plan = getSyncSequence();
+  return plan.map((step, index) => syncResults[index] || {
+    name: step.name,
+    category: step.category,
+    symbolMs: step.symbolMs,
+    status: syncRxActive ? 'WAITING' : '—',
+    score: 0,
+    freq: step.tones[0]
+  });
 }
 
 function renderResults() {
   els.results.innerHTML = '';
-  if (!syncResults.length) {
-    els.results.innerHTML = '<p class="hint">Run Sync RX to score the known tone sequence.</p>';
-    return;
-  }
-  syncResults.forEach((result, index) => {
+  const rows = syncPlanWithStates();
+  rows.forEach((result, index) => {
     const row = document.createElement('div');
     row.className = 'result-row';
-    row.innerHTML = `<span>Test ${String(index + 1).padStart(2, '0')}</span><span>${result.name}</span><span class="pill ${result.status.toLowerCase()}">${result.status}</span>`;
+    const statusClass = result.status === '—' ? 'waiting' : result.status.toLowerCase();
+    row.innerHTML = `<span>Test ${String(index + 1).padStart(2, '0')}</span><span>${result.name}</span><span class="pill ${statusClass}">${result.status}</span>`;
     els.results.append(row);
   });
-  const pass = syncResults.filter(r => r.status === 'PASS').sort((a, b) => b.score - a.score);
-  const mark = pass[0]?.freq || 16000;
-  const space = pass.find(r => Math.abs(r.freq - mark) >= 1000)?.freq || Math.min(MAX_FREQ, mark + 1500);
-  const confidence = Math.round((syncResults.reduce((sum, r) => sum + r.score, 0) / syncResults.length) * 100);
-  const symbol = confidence > 80 ? 120 : confidence > 55 ? 180 : 250;
-  els.recommendation.textContent = `Recommended profile: mark ${formatFreq(mark)}, space ${formatFreq(space)}, symbol ${symbol} ms, confidence ${confidence}%`;
+  updateRecommendation(rows);
+}
+
+function updateRecommendation(rows) {
+  const completed = rows.filter(r => ['PASS', 'WEAK', 'FAIL'].includes(r.status));
+  if (!completed.length) {
+    els.recommendation.textContent = 'Recommended profile: waiting for sync data.';
+    return;
+  }
+  const carriers = completed.filter(r => r.category === 'carrier' && r.status === 'PASS').sort((a, b) => b.score - a.score);
+  const timing = completed.filter(r => r.category === 'timing' && r.status === 'PASS').sort((a, b) => a.symbolMs - b.symbolMs);
+  const usableCount = completed.filter(r => ['PASS', 'WEAK'].includes(r.status)).length;
+  if (carriers.length < 2 || usableCount < 4 || !timing.length) {
+    els.recommendation.textContent = 'Recommended profile: none yet — try lower frequency range, higher volume, slower timing, or different device placement.';
+    return;
+  }
+  const mark = carriers[0].freq;
+  const space = carriers.find(r => Math.abs(r.freq - mark) >= 1000)?.freq || carriers[1].freq;
+  const fastest = timing[0].symbolMs;
+  const confidence = Math.round((completed.reduce((sum, r) => sum + r.score, 0) / completed.length) * 100);
+  els.recommendation.textContent = `Recommended profile: mark ${formatFreq(mark)}, space ${formatFreq(space)}, fastest reliable symbol ${fastest} ms (${rateLabel(fastest)}), confidence ${confidence}%`;
 }
 
 function scoreWindow(expectedFreq, start, end) {
-  const samples = traceBuffer.filter(s => s.timestamp >= start && s.timestamp <= end && s.frequency);
+  const stableStart = start + EDGE_IGNORE_MS;
+  const stableEnd = end - EDGE_IGNORE_MS;
+  if (stableEnd <= stableStart) return 0;
+  const samples = traceBuffer.filter(s => s.timestamp >= stableStart && s.timestamp <= stableEnd && s.frequency);
   if (!samples.length) return 0;
   const hits = samples.filter(s => Math.abs(s.frequency - expectedFreq) <= 700);
   const strength = hits.reduce((sum, s) => sum + s.strength, 0) / Math.max(1, hits.length);
@@ -559,21 +729,29 @@ function scoreWindow(expectedFreq, start, end) {
 function scoreSync(now) {
   let cursor = syncStartTime;
   const scored = [];
-  for (const step of SYNC_SEQUENCE) {
-    const stepStart = cursor;
-    const stepEnd = cursor + (step.duration + 70) * step.tones.length + 120;
-    if (now < stepEnd) break;
-    const scores = step.tones.map((tone, index) => scoreWindow(tone, stepStart + index * (step.duration + 70), stepStart + index * (step.duration + 70) + step.duration));
+  const sequence = getSyncSequence();
+  for (const step of sequence) {
+    const toneSpan = step.duration + (step.gap ?? SYNC_GAP_MS);
+    const stepEnd = cursor + toneSpan * step.tones.length + (step.afterGap ?? SYNC_GAP_MS);
+    if (now < stepEnd) {
+      scored.push({ ...step, status: 'RUNNING', score: 0, freq: step.tones[0] });
+      break;
+    }
+    const scores = step.tones.map((tone, index) => {
+      const toneStart = cursor + index * toneSpan;
+      return scoreWindow(tone, toneStart, toneStart + step.duration);
+    });
     const score = scores.reduce((sum, value) => sum + value, 0) / scores.length;
-    const status = score > 0.58 ? 'PASS' : score > 0.28 ? 'WEAK' : 'FAIL';
-    scored.push({ name: step.name, status, score, freq: step.tones[0] });
-    cursor = stepEnd + 180;
+    const status = score > 0.52 ? 'PASS' : score > 0.22 ? 'WEAK' : 'FAIL';
+    scored.push({ ...step, status, score, freq: step.tones[0] });
+    cursor = stepEnd;
   }
-  if (scored.length !== syncResults.length) {
+  const changed = JSON.stringify(scored.map(r => [r.name, r.status, Math.round(r.score * 100)])) !== JSON.stringify(syncResults.map(r => [r.name, r.status, Math.round(r.score * 100)]));
+  if (changed) {
     syncResults = scored;
     renderResults();
   }
-  if (syncResults.length === SYNC_SEQUENCE.length) {
+  if (syncResults.length === sequence.length && syncResults.every(r => ['PASS', 'WEAK', 'FAIL'].includes(r.status))) {
     syncRxActive = false;
     modeLabel = 'sync RX complete';
     log('OK', 'sync sequence scored');
@@ -590,10 +768,14 @@ function animationLoop() {
 function attachEvents() {
   els.duration.addEventListener('input', updateSliderLabels);
   els.volume.addEventListener('input', updateSliderLabels);
+  els.symbolLength.addEventListener('change', updateSliderLabels);
   els.playTone.addEventListener('click', () => playTone(selectedTone, Number(els.duration.value)));
-  els.playSweep.addEventListener('click', () => playSequence(TONES.map(freq => ({ name: `${freq / 1000} kHz sweep tone`, tones: [freq], duration: 300 })), 'sweep'));
-  els.playPattern.addEventListener('click', () => playSequence([{ name: '16/18 kHz pattern', tones: [16000, 18000, 16000, 18000, 16000, 18000], duration: 180 }], 'pattern'));
-  els.syncTx.addEventListener('click', () => playSequence(SYNC_SEQUENCE, 'sync TX'));
+  els.playSweep.addEventListener('click', () => playSequence(TONES.map(freq => ({ name: `${freq / 1000} kHz sweep tone`, tones: [freq], duration: 300, gap: SYNC_GAP_MS })), TX_STATES.SWEEP, 'sweep'));
+  els.playPattern.addEventListener('click', () => {
+    const symbolMs = getSelectedSymbolMs();
+    playSequence([{ name: `16/18 kHz pattern, ${symbolMs} ms`, tones: [16000, 18000, 16000, 18000, 16000, 18000], duration: symbolMs, gap: SYNC_GAP_MS }], TX_STATES.PATTERN, 'pattern');
+  });
+  els.syncTx.addEventListener('click', () => playSequence(getSyncSequence(), TX_STATES.SYNC, 'sync TX'));
   els.listen.addEventListener('click', async () => {
     if (isListening) stopListening();
     else {
