@@ -340,8 +340,12 @@
       <button id="stopPacketLoop">Stop Loop</button>
       <button id="packetRx">Receive Mode</button>
       <button id="packetSelfTest">Packet self-test</button>
+      <button id="packetExportLogs">Export Logs</button>
     </div>
-    <div class="packet-output" id="packetOut">Packet RX idle.</div>
+    <h3>Live Packet RX Status</h3>
+    <div class="packet-output" id="packetLiveStatus">Packet RX idle.</div>
+    <h3>Candidate / Packet Log</h3>
+    <div class="packet-output" id="packetOut">No candidate or packet records yet.</div>
   </section>
 </main>
 
@@ -416,7 +420,9 @@ const els = {
   stopPacketLoop: document.getElementById('stopPacketLoop'),
   packetRx: document.getElementById('packetRx'),
   packetSelfTest: document.getElementById('packetSelfTest'),
+  packetExportLogs: document.getElementById('packetExportLogs'),
   closedPanels: document.getElementById('closedPanels'),
+  packetLiveStatus: document.getElementById('packetLiveStatus'),
   packetOut: document.getElementById('packetOut'),
   results: document.getElementById('results'),
   recommendation: document.getElementById('recommendation'),
@@ -453,10 +459,15 @@ let packetLoopSession = 0;
 let packetLoopIndex = 0;
 let packetRxActive = false;
 let packetRxState = 'idle';
-let packetRxAttempt = 0;
+let packetCandidateCount = 0;
+let packetAttemptCount = 0;
 let packetSeenUntil = 0;
 let packetRxArmTime = 0;
 let packetLog = [];
+let packetLogSession = 0;
+let packetVisibleLogSession = 0;
+const PACKET_LOG_LIMIT = 500;
+const PACKET_VISIBLE_LIMIT = 20;
 let packetFreqTouched = false;
 let packetRxProgressLast = 0;
 
@@ -650,11 +661,14 @@ function resetPacketLoopState({ stopAudio = false } = {}) {
 
 function resetPacketRxParser({ clearLog = false } = {}) {
   packetRxState = 'waiting preamble';
-  packetRxAttempt = 0;
   packetSeenUntil = 0;
   packetRxArmTime = performance.now();
   packetRxProgressLast = 0;
-  if (clearLog) packetLog = [];
+  if (clearLog) {
+    packetLogSession += 1;
+    packetVisibleLogSession = packetLogSession;
+    renderPacketLog();
+  }
 }
 
 function stopTx(fadeMs = FADE_MS) {
@@ -1245,8 +1259,29 @@ async function runPacketLoop() {
   if (session === packetLoopSession) resetPacketLoopState();
 }
 
-function setPacketOut(text) {
-  els.packetOut.textContent = text;
+function setPacketLiveStatus(text) {
+  els.packetLiveStatus.textContent = text;
+}
+
+function renderPacketLog() {
+  const visibleRecords = packetLog
+    .filter(record => record.session === packetVisibleLogSession)
+    .slice(0, PACKET_VISIBLE_LIMIT);
+  if (!visibleRecords.length) {
+    els.packetOut.textContent = 'No candidate or packet records for this receive run yet.';
+    return;
+  }
+  const hidden = packetLog.filter(record => record.session === packetVisibleLogSession).length - visibleRecords.length;
+  const suffix = hidden > 0 ? `\n\nShowing latest ${PACKET_VISIBLE_LIMIT}; ${hidden} older record(s) retained for JSON export.` : '';
+  els.packetOut.textContent = visibleRecords.map(record => formatPacketDiagnostic(record.decoded, record.label)).join('\n\n') + suffix;
+}
+
+function addPacketLogRecord(decoded, now) {
+  const record = makePacketLogRecord(decoded, now);
+  packetLog.unshift(record);
+  packetLog = packetLog.slice(0, PACKET_LOG_LIMIT);
+  renderPacketLog();
+  return record;
 }
 
 function classifySymbolWindow(start, end, mark, space) {
@@ -1348,7 +1383,58 @@ function decodePacketFrom(startTime, now = performance.now()) {
   return decodePacketBits(bits, { preambleBits, uncertain, missing, confidences });
 }
 
-function formatPacketDiagnostic(decoded, label = 'Packet attempt') {
+function packetKindFromDecoded(decoded) {
+  if (!decoded.preambleFound) return 'candidate_lock';
+  if (decoded.syncBitsCollected === 8 && decoded.syncByte !== PACKET_SYNC_BYTE) return 'false_lock';
+  if (decoded.complete) return 'packet_complete';
+  if (decoded.syncByte === PACKET_SYNC_BYTE && decoded.length !== null) return decoded.missing.length ? 'packet_timeout' : 'packet_collecting';
+  return 'candidate_lock';
+}
+
+function packetLabelForKind(kind, decoded) {
+  if (kind === 'packet_complete') return `Packet ${String(packetAttemptCount).padStart(3, '0')} complete: checksum ${decoded.checksumStatus}`;
+  if (kind === 'packet_timeout') return `Packet ${String(packetAttemptCount).padStart(3, '0')} partial: timed out before complete`;
+  if (kind === 'packet_collecting') return `Packet ${String(packetAttemptCount).padStart(3, '0')}: length known, collecting payload`;
+  if (kind === 'false_lock') return `Candidate ${String(packetCandidateCount).padStart(3, '0')}: false lock / wrong sync`;
+  return `Candidate ${String(packetCandidateCount).padStart(3, '0')}: preamble candidate`;
+}
+
+function makePacketLogRecord(decoded, now = performance.now()) {
+  const kind = packetKindFromDecoded(decoded);
+  if (kind.startsWith('packet_')) packetAttemptCount += 1;
+  else packetCandidateCount += 1;
+  const timestampDate = new Date(Date.now() - (performance.now() - now));
+  const syncHex = decoded.syncByte === null ? null : `0x${decoded.syncByte.toString(16).padStart(2, '0')}`;
+  const lengthByte = decoded.length === null ? null : decoded.length;
+  const label = packetLabelForKind(kind, decoded);
+  const syncStatus = kind === 'false_lock' ? 'wrong sync' : decoded.syncStatus;
+  return {
+    kind,
+    timestamp: timestampDate.toISOString(),
+    session: packetLogSession,
+    label,
+    collectedBits: decoded.collectedBits,
+    expectedBits: decoded.length === null ? null : decoded.expectedBits,
+    preambleMatches: decoded.preambleMatches,
+    syncStatus,
+    syncByte: syncHex,
+    lengthByte,
+    checksumStatus: decoded.checksumStatus,
+    finalResult: decoded.finalResult,
+    reason: decoded.reason,
+    rawBits: decoded.bits.join(''),
+    uncertainSymbols: [...decoded.uncertain],
+    missedSymbols: [...decoded.missing],
+    decoded
+  };
+}
+
+function packetRecordForExport(record) {
+  const { decoded, ...exportRecord } = record;
+  return exportRecord;
+}
+
+function formatPacketDiagnostic(decoded, label = 'Decode candidate') {
   const expectedPayloadBytes = decoded.length ?? 'missing';
   return `${label}
 Preamble: ${decoded.preambleFound ? 'found' : decoded.collectedBits ? 'partial' : 'missing'} (${decoded.preambleMatches}/${decoded.preambleBits} alternating symbols matched)
@@ -1428,7 +1514,7 @@ function updatePacketWaiting(now) {
   const progress = packetPreambleProgress(now);
   packetRxState = progress.state;
   updatePacketControlLabels();
-  setPacketOut(`Packet RX armed
+  setPacketLiveStatus(`Packet RX armed
 RX mode: ${isListening ? 'listening' : 'not listening'} → ${progress.state}
 Expected preamble frequencies: mark ${formatFreq(mark)}, space ${formatFreq(space)}
 Current detected peak: ${formatFreq(progress.currentPeak)}
@@ -1436,7 +1522,7 @@ Carrier confidence: ${percent(progress.carrierConfidence)}
 Alternating pattern progress: ${progress.matches}/${PACKET_PREAMBLE_BITS.length} symbols matched (need ${progress.needed})
 Preamble confidence: ${percent(progress.averageConfidence)}
 Why not locked: ${progress.reason}
-Raw trace and activity remain live while waiting.`);
+Raw trace and activity remain live while waiting. Candidate / Packet Log is stable below.`);
 }
 
 function scanPackets(now) {
@@ -1447,15 +1533,16 @@ function scanPackets(now) {
   updatePacketControlLabels();
   const decoded = decodePacketFrom(start, now);
   if (!decoded.complete && decoded.collectedBits < PACKET_PREAMBLE_BITS.length + 4) { updatePacketWaiting(now); return; }
-  packetRxAttempt += 1;
   packetSeenUntil = now + Number(els.packetSymbol.value) * 8;
   packetRxArmTime = packetSeenUntil;
+  const record = addPacketLogRecord(decoded, now);
   const status = decoded.finalResult;
-  const text = formatPacketDiagnostic(decoded, `Packet attempt ${String(packetRxAttempt).padStart(3, '0')}`);
-  packetLog.unshift(text);
-  packetLog = packetLog.slice(0, 5);
-  setPacketOut(packetLog.join('\n\n'));
-  log(status === 'OK' ? 'OK' : status === 'BAD' ? 'BAD' : status === 'NO LOCK' ? 'WARN' : 'WARN', `packet RX ${status.toLowerCase()}: ${decoded.reason}`);
+  setPacketLiveStatus(`${record.label}: ${record.kind}
+Collected ${record.collectedBits}${record.expectedBits === null ? '' : ` / ${record.expectedBits}`} bits
+Sync: ${record.syncStatus}
+Checksum: ${record.checksumStatus}
+Reason: ${record.reason}`);
+  log(status === 'OK' ? 'OK' : status === 'BAD' ? 'BAD' : status === 'NO LOCK' ? 'WARN' : 'WARN', `packet RX ${record.kind}: ${decoded.reason}`);
 }
 
 function runPacketSelfTest() {
@@ -1472,8 +1559,68 @@ function runPacketSelfTest() {
     const pass = expected.includes(decoded.finalResult) || (expected === 'PARTIAL/BAD' && ['PARTIAL', 'BAD'].includes(decoded.finalResult));
     return `${pass ? 'PASS' : 'FAIL'} ${name}: expected ${expected}, got ${decoded.finalResult} — ${decoded.reason}`;
   });
-  setPacketOut(`Packet self-test (no audio)\n${lines.join('\n')}`);
+  els.packetOut.textContent = `Packet self-test (no audio)\n${lines.join('\n')}`;
   log(lines.every(line => line.startsWith('PASS')) ? 'OK' : 'BAD', 'packet no-audio self-test complete');
+}
+
+function currentPacketSessionSettings() {
+  return {
+    packetText: els.packetText.value || 'HELLO WORLD',
+    markFrequency: Number(els.packetMark.value),
+    spaceFrequency: Number(els.packetSpace.value),
+    symbolLengthMs: Number(els.packetSymbol.value),
+    detectorIntervalMs: DETECT_INTERVAL_MS,
+    loopIntervalSeconds: Number(els.packetInterval.value),
+    preambleBits: PACKET_PREAMBLE_BITS.length,
+    syncByte: `0x${PACKET_SYNC_BYTE.toString(16).padStart(2, '0')}`,
+    retainedEntryLimit: PACKET_LOG_LIMIT
+  };
+}
+
+function recentRxSnapshots(limit = 50) {
+  return traceBuffer.slice(-limit).map(sample => ({
+    timestamp: new Date(Date.now() - (performance.now() - sample.timestamp)).toISOString(),
+    peak: sample.peak,
+    strength: sample.strength,
+    mode: sample.mode,
+    energyMap: sample.meta?.energyMap ?? null
+  }));
+}
+
+function exportPacketLogs() {
+  const exportData = {
+    exportedAt: new Date().toISOString(),
+    sessionSettings: currentPacketSessionSettings(),
+    packetText: els.packetText.value || 'HELLO WORLD',
+    markFrequency: Number(els.packetMark.value),
+    spaceFrequency: Number(els.packetSpace.value),
+    symbolLengthMs: Number(els.packetSymbol.value),
+    detectorIntervalMs: DETECT_INTERVAL_MS,
+    activityTotals: Object.fromEntries(activity),
+    currentActivityTotals: Object.fromEntries(activity),
+    currentState: {
+      isListening,
+      packetRxActive,
+      packetRxState,
+      packetLoopActive,
+      packetLoopIndex,
+      currentPeak,
+      currentStrength,
+      txState
+    },
+    recentRxSnapshots: recentRxSnapshots(),
+    candidatePacketLogEntries: packetLog.map(packetRecordForExport)
+  };
+  const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `packet-rx-log-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  log('OK', `exported ${packetLog.length} packet/candidate log record(s) to JSON`);
 }
 
 function animationLoop() {
@@ -1528,6 +1675,7 @@ function attachEvents() {
     log('OK', 'packet loop stopped; TX sequence reset to index 0');
   });
   els.packetSelfTest.addEventListener('click', runPacketSelfTest);
+  els.packetExportLogs.addEventListener('click', exportPacketLogs);
   els.packetRx.addEventListener('click', async () => {
     if (packetRxActive) {
       packetRxActive = false;
@@ -1545,7 +1693,7 @@ function attachEvents() {
     packetRxActive = true;
     els.packetRx.classList.add('active');
     resetPacketRxParser({ clearLog: true });
-    setPacketOut('Packet RX armed; parser fresh and waiting for a new preamble. Trace/activity continue updating.');
+    setPacketLiveStatus('Packet RX armed; parser fresh and waiting for a new preamble. Trace/activity continue updating.');
     updatePacketControlLabels();
     log('OK', 'packet receiver armed with fresh parser state');
   });
