@@ -828,7 +828,7 @@ function clearTxTimeouts() {
   txTimeouts.clear();
 }
 
-function scheduleToneSegment(freq, durationMs, token, label) {
+function scheduleToneSegment(freq, durationMs, token, label, waitForCleanup = true) {
   return new Promise(resolve => {
     if (token !== txGeneration) { resolve(false); return; }
     const ac = ensureAudioContext();
@@ -848,7 +848,8 @@ function scheduleToneSegment(freq, durationMs, token, label) {
     osc.start(now);
     osc.stop(now + duration + 0.025);
     modeLabel = label;
-    scheduleTxTimeout(completed => resolve(completed && token === txGeneration), durationMs + FADE_MS + 25);
+    const waitMs = waitForCleanup ? durationMs + FADE_MS + 25 : durationMs;
+    scheduleTxTimeout(completed => resolve(completed && token === txGeneration), waitMs);
   });
 }
 
@@ -887,7 +888,7 @@ async function playSequence(sequence, state, label) {
     if (token !== txGeneration) return;
     for (const tone of step.tones) {
       const stepLabel = `TX ${step.name}`;
-      await scheduleToneSegment(tone, step.duration, token, stepLabel);
+      await scheduleToneSegment(tone, step.duration, token, stepLabel, false);
       if (token !== txGeneration) return;
       await sleep(step.gap ?? SYNC_GAP_MS, token);
     }
