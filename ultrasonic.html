@@ -455,6 +455,7 @@ const PACKET_SYNC_BYTE = MICROFRAME_DATA_SYNC;
 const PACKET_PREAMBLE_BITS = Array.from({ length: 16 }, (_, index) => index % 2 ? 0 : 1);
 const PACKET_MARKER_DEFAULT_FREQ = 15000;
 const PACKET_MARKER_GUARD_MS = 100;
+const PACKET_RX_BODY_OFFSET_MS = 275;
 const PACKET_META_MARKER_PULSE_MS = 150;
 const PACKET_META_MARKER_GAP_MS = 90;
 const PACKET_MARKER_THRESHOLD = 0.18;
@@ -1943,7 +1944,7 @@ function compactOffsetSweep(decoded) {
 
 function formatPacketDiagnostic(decoded, label = 'Decode candidate') {
   const prefix = decoded.type === 'meta' ? 'META' : decoded.type === 'data' ? 'DATA' : label;
-  const common = `marker=${Math.round(decoded.markerFrequency || getPacketMarkerFreq())} strength=${compactRatio(decoded.markerStrength)} dur=${Math.round(decoded.markerDurationSeen || 0)}ms guard=${Math.round(decoded.guardGapMs ?? PACKET_MARKER_GUARD_MS)}`;
+  const common = `marker=${Math.round(decoded.markerFrequency || getPacketMarkerFreq())} strength=${compactRatio(decoded.markerStrength)} dur=${Math.round(decoded.markerDurationSeen || 0)}ms guard=${Math.round(decoded.guardGapMs ?? PACKET_MARKER_GUARD_MS)} rxOff=${Math.round(decoded.rxBodyOffsetMs ?? PACKET_RX_BODY_OFFSET_MS)}`;
   if (decoded.type === 'meta') return `${prefix} ${common} len=${decoded.length} slots=${decoded.totalSlots} crc=${decoded.crc.toString(16).padStart(4, '0')}`;
   if (decoded.type === 'data') {
     const expected = expectedDataBytesForSeq(decoded.seq);
@@ -2022,7 +2023,7 @@ function decodeToneDelimitedMicroframe(marker, now = performance.now()) {
   const mode = getPacketFrameMode();
   const markerPattern = marker.markerPattern || 'unknown';
   const expectedFrameBytes = markerPattern === 'META' ? (mode === 'checked' ? 6 : 5) : (mode === 'checked' ? 4 : 3);
-  const startTime = marker.markerEnd + PACKET_MARKER_GUARD_MS;
+  const startTime = marker.markerEnd + PACKET_RX_BODY_OFFSET_MS;
   const bits = [];
   const uncertain = [];
   const missing = [];
@@ -2086,6 +2087,7 @@ function decorateToneDelimitedDecoded(decoded, details) {
     markerStart: marker.markerStart,
     markerEnd: marker.markerEnd,
     guardGapMs: PACKET_MARKER_GUARD_MS,
+    rxBodyOffsetMs: PACKET_RX_BODY_OFFSET_MS,
     bodyStart: startTime,
     rawFrameBytes,
     expectedBits,
@@ -2193,7 +2195,7 @@ function scanToneDelimitedPackets(now) {
     return;
   }
   packetLastMarkerStart = marker.markerStart;
-  packetSeenUntil = marker.markerEnd + PACKET_MARKER_GUARD_MS + decoded.expectedBits * Number(els.packetSymbol.value) + Number(els.packetSymbol.value) * 0.75;
+  packetSeenUntil = marker.markerEnd + PACKET_RX_BODY_OFFSET_MS + decoded.expectedBits * Number(els.packetSymbol.value) + Number(els.packetSymbol.value) * 0.75;
   packetRxArmTime = Math.max(packetRxArmTime, marker.markerEnd);
   if (decoded.finalResult === 'OK') observeMicroframe(decoded, now);
   const record = addPacketLogRecord(decoded, now);
