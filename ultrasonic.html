@@ -1971,7 +1971,7 @@ function findToneMarkerCandidate(now) {
   let run = null;
   for (const sample of samples) {
     const strength = markerStrengthForSample(sample, markerFreq);
-    const on = strength >= PACKET_MARKER_THRESHOLD;
+    const on = strength >= PACKET_MARKER_THRESHOLD && strength >= markerStrengthForSample(sample, Number(els.packetSpace.value)) * 1.25 && strength >= markerStrengthForSample(sample, Number(els.packetMark.value)) * 1.25;
     if (on) {
       if (!run || sample.timestamp - run.end > DETECT_INTERVAL_MS * 2.5) {
         if (run) runs.push(run);
