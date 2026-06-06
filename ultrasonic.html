@@ -1910,22 +1910,31 @@ function compactOffsetSweep(decoded) {
   const space = Number(els.packetSpace.value);
   const expected = expectedSeq0FrameBytes();
   const lines = [`OFFSET_SWEEP_EXPECTED_SEQ0 expected=${compactBytes(expected)}`];
-  for (let offset = 0; offset <= 300; offset += 25) {
-    const bits = [];
+  for (let offset = -250; offset <= 300; offset += 25) {
     const bitLabels = [];
     const confidences = [];
     const startTime = decoded.markerEnd + offset;
     for (let index = 0; index < 24; index++) {
       const guard = symbolGuardMs(symbolMs);
       const classified = classifySymbolWindow(startTime + index * symbolMs + guard, startTime + (index + 1) * symbolMs - guard, mark, space);
-      bits.push(classified.bit ? 1 : 0);
       bitLabels.push(classified.missing ? '·' : String(classified.bit));
       confidences.push(classified.confidence);
     }
+    const byteLabels = [];
     const bytes = [];
-    for (let i = 0; i + 7 < bits.length; i += 8) bytes.push(bitsToByte(bits.slice(i, i + 8)));
-    const match = bytes.length === expected.length && bytes.every((byte, index) => byte === expected[index]);
-    lines.push(`${offset}ms bytes=${compactBytes(bytes)} bits=${bitLabels.join('')} conf=${compactRatio(average(confidences))} match=${match ? 'yes' : 'no'}`);
+    for (let i = 0; i + 7 < bitLabels.length; i += 8) {
+      const byteBits = bitLabels.slice(i, i + 8);
+      if (byteBits.some(bit => bit === '·')) {
+        byteLabels.push('..');
+        bytes.push(null);
+      } else {
+        const byte = bitsToByte(byteBits.map(bit => Number(bit)));
+        byteLabels.push(byte.toString(16).padStart(2, '0'));
+        bytes.push(byte);
+      }
+    }
+    const match = bytes.length === expected.length && bytes.every((byte, index) => byte !== null && byte === expected[index]);
+    lines.push(`${offset}ms bytes=${byteLabels.join(' ')} bits=${bitLabels.join('')} conf=${compactRatio(average(confidences))} match=${match ? 'yes' : 'no'}`);
   }
   decoded.compactOffsetSweep = `\n${lines.join('\n')}`;
   return decoded.compactOffsetSweep;
