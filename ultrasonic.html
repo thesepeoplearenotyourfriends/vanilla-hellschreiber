@@ -428,6 +428,7 @@
 </main>
 
 <script>
+
 'use strict';
 
 // The playground is deliberately small and dependency-free.  It is an
@@ -438,7 +439,7 @@ const TONES = [14000, 15000, 16000, 17000, 18000, 19000];
 const BIN_FREQS = [14000, 15000, 16000, 17000, 18000, 19000, 20000];
 const MIN_FREQ = 14000;
 const MAX_FREQ = 20000;
-const HISTORY_MS = 90000;
+const HISTORY_MS = 45000;
 const TRACE_WINDOW_MS = 30000;
 const DETECT_INTERVAL_MS = 50;
 const STRONG_ENERGY = 0.018;
@@ -451,11 +452,27 @@ const SYNC_PREAMBLE_BITS = Array.from({ length: 12 }, (_, index) => index % 2 ? 
 const MICROFRAME_DATA_SYNC = 0xa7;
 const MICROFRAME_META_SYNC = 0x5a;
 const MICROFRAME_BYTES_PER_SLOT = 2;
+const PACKET_BODY_MODE = 'quad';
+const PACKET_QUAD_FREQS = [16000, 17000, 18000, 19000];
+const PACKET_SEND_META = false;
+const PACKET_TERMINATOR_BYTE = 0x00;
 const PACKET_SYNC_BYTE = MICROFRAME_DATA_SYNC;
 const PACKET_PREAMBLE_BITS = Array.from({ length: 16 }, (_, index) => index % 2 ? 0 : 1);
 const PACKET_MARKER_DEFAULT_FREQ = 15000;
 const PACKET_MARKER_GUARD_MS = 100;
-const PACKET_RX_BODY_OFFSET_MS = 275;
+const PACKET_RX_BODY_OFFSET_MS = 150;
+const PACKET_RX_ADAPTIVE_OFFSETS = true;
+const PACKET_RX_OFFSET_MIN_MS = 50;
+const PACKET_RX_OFFSET_MAX_MS = 325;
+const PACKET_RX_OFFSET_STEP_MS = 25;
+const PACKET_VERBOSE_ORACLE_LOGS = false;
+const PACKET_EXPECTED_DEBUG_LOGS = false;
+const PACKET_RX_MAX_SLOTS_WITHOUT_META = 64;
+const PACKET_CLOCKFIT_OFFSET_MIN_MS = -100;
+const PACKET_CLOCKFIT_OFFSET_MAX_MS = 450;
+const PACKET_CLOCKFIT_OFFSET_STEP_MS = 25;
+const PACKET_CLOCKFIT_SYMBOL_DELTA_MS = 30;
+const PACKET_CLOCKFIT_SYMBOL_STEP_MS = 10;
 const PACKET_META_MARKER_PULSE_MS = 150;
 const PACKET_META_MARKER_GAP_MS = 90;
 const PACKET_MARKER_THRESHOLD = 0.18;
@@ -565,7 +582,7 @@ let packetRxArmTime = 0;
 let packetLog = [];
 let packetLogSession = 0;
 let packetVisibleLogSession = 0;
-const PACKET_LOG_LIMIT = 500;
+const PACKET_LOG_LIMIT = 80;
 let packetFreqTouched = false;
 let packetRxProgressLast = 0;
 let packetLastMarkerStart = 0;
@@ -833,27 +850,102 @@ function scheduleToneSegment(freq, durationMs, token, label, waitForCleanup = tr
   return new Promise(resolve => {
     if (token !== txGeneration) { resolve(false); return; }
     const ac = ensureAudioContext();
-    const osc = ac.createOscillator();
-    const gain = ac.createGain();
     const now = ac.currentTime;
-    const duration = Math.max(durationMs / 1000, 0.04);
-    const fade = Math.min(FADE_MS / 1000, duration / 3);
-    const volume = Number(els.volume.value);
-    osc.frequency.setValueAtTime(freq, now);
-    gain.gain.setValueAtTime(0, now);
-    gain.gain.linearRampToValueAtTime(volume, now + fade);
-    gain.gain.setValueAtTime(volume, now + Math.max(fade, duration - fade));
-    gain.gain.linearRampToValueAtTime(0, now + duration);
-    osc.connect(gain).connect(ac.destination);
-    registerTxNode(osc, gain);
-    osc.start(now);
-    osc.stop(now + duration + 0.025);
+    scheduleToneSegmentAt(freq, now, durationMs, token);
     modeLabel = label;
     const waitMs = waitForCleanup ? durationMs + FADE_MS + 25 : durationMs;
     scheduleTxTimeout(completed => resolve(completed && token === txGeneration), waitMs);
   });
 }
 
+function scheduleToneSegmentAt(freq, startTime, durationMs, token) {
+  if (token !== txGeneration) return null;
+  const ac = ensureAudioContext();
+  const osc = ac.createOscillator();
+  const gain = ac.createGain();
+  const duration = Math.max(durationMs / 1000, 0.04);
+  const fade = Math.min(FADE_MS / 1000, duration / 3);
+  const volume = Number(els.volume.value);
+  osc.frequency.setValueAtTime(freq, startTime);
+  gain.gain.setValueAtTime(0, startTime);
+  gain.gain.linearRampToValueAtTime(volume, startTime + fade);
+  gain.gain.setValueAtTime(volume, startTime + Math.max(fade, duration - fade));
+  gain.gain.linearRampToValueAtTime(0, startTime + duration);
+  osc.connect(gain).connect(ac.destination);
+  registerTxNode(osc, gain);
+  osc.start(startTime);
+  osc.stop(startTime + duration + 0.025);
+  return { osc, gain, startTime, endTime: startTime + duration };
+}
+
+function scheduleSequenceTimeline(sequence, token) {
+  const ac = ensureAudioContext();
+  const leadInSec = 0.08;
+  let cursor = ac.currentTime + leadInSec;
+  const rawSegments = [];
+  let tonesScheduled = 0;
+  for (const step of sequence) {
+    const durationMs = Math.max(1, Number(step.duration) || 1);
+    const gapMs = Number(step.gap ?? SYNC_GAP_MS);
+    const afterGapMs = Number(step.afterGap ?? SYNC_GAP_MS);
+    for (const tone of step.tones) {
+      const start = cursor;
+      const end = start + durationMs / 1000;
+      rawSegments.push({ freq: tone, start, end });
+      tonesScheduled += 1;
+      cursor = end + gapMs / 1000;
+    }
+    cursor += afterGapMs / 1000;
+  }
+  if (!rawSegments.length || token !== txGeneration) return { tonesScheduled: 0, carriersScheduled: 0, totalMs: 0 };
+
+  // Use one steady oscillator per carrier and schedule gain ramps on the
+  // AudioContext clock. This keeps the no-JS-timer-drift win, but avoids the
+  // previous one-oscillator design where abrupt frequency changes could sound
+  // like pop-pop-pop on phone speakers.
+  const segments = [];
+  for (const seg of rawSegments) {
+    const prev = segments[segments.length - 1];
+    if (prev && prev.freq === seg.freq && Math.abs(prev.end - seg.start) < 0.001) {
+      prev.end = seg.end;
+    } else {
+      segments.push({ ...seg });
+    }
+  }
+  const volume = Number(els.volume.value);
+  const ramp = Math.min(0.008, Math.max(0.002, FADE_MS / 2000));
+  const startAt = Math.max(ac.currentTime + 0.01, segments[0].start - 0.03);
+  const stopAt = segments.at(-1).end + 0.08;
+  const carrierGains = new Map();
+
+  for (const freq of [...new Set(segments.map(seg => seg.freq))]) {
+    const osc = ac.createOscillator();
+    const gain = ac.createGain();
+    osc.frequency.setValueAtTime(freq, startAt);
+    gain.gain.setValueAtTime(0, ac.currentTime);
+    gain.gain.setValueAtTime(0, startAt);
+    osc.connect(gain).connect(ac.destination);
+    registerTxNode(osc, gain);
+    carrierGains.set(freq, gain);
+    osc.start(startAt);
+    osc.stop(stopAt);
+  }
+
+  for (const seg of segments) {
+    const gain = carrierGains.get(seg.freq);
+    if (!gain) continue;
+    const duration = Math.max(0.001, seg.end - seg.start);
+    const fade = Math.min(ramp, duration / 4);
+    const upEnd = Math.min(seg.end, seg.start + fade);
+    const downStart = Math.max(upEnd, seg.end - fade);
+    gain.gain.setValueAtTime(0, Math.max(startAt, seg.start - fade));
+    gain.gain.linearRampToValueAtTime(volume, upEnd);
+    gain.gain.setValueAtTime(volume, downStart);
+    gain.gain.linearRampToValueAtTime(0, seg.end);
+  }
+
+  return { tonesScheduled, carriersScheduled: carrierGains.size, totalMs: Math.max(0, (cursor - ac.currentTime) * 1000) };
+}
 async function playTone(freq, durationMs, label = 'manual tone') {
   const stopped = stopTx();
   if (stopped.hadNodes) {
@@ -885,16 +977,10 @@ async function playSequence(sequence, state, label) {
   }
   const token = txGeneration;
   setTxState(state, label);
-  for (const step of sequence) {
-    if (token !== txGeneration) return;
-    for (const tone of step.tones) {
-      const stepLabel = `TX ${step.name}`;
-      await scheduleToneSegment(tone, step.duration, token, stepLabel, false);
-      if (token !== txGeneration) return;
-      await sleep(step.gap ?? SYNC_GAP_MS, token);
-    }
-    await sleep(step.afterGap ?? SYNC_GAP_MS, token);
-  }
+  modeLabel = label;
+  const scheduled = scheduleSequenceTimeline(sequence, token);
+  log('OK', `${label} scheduled on AudioContext clock: ${scheduled.tonesScheduled} tone segments / ${scheduled.carriersScheduled || 0} steady carriers, ${Math.round(scheduled.totalMs)} ms`);
+  await sleep(scheduled.totalMs + FADE_MS + 50, token);
   if (token === txGeneration) {
     setTxState(TX_STATES.IDLE);
     log('OK', `${label} complete`);
@@ -1159,7 +1245,12 @@ Reason: ${syncRxState === 'waiting for sync' ? 'RX is listening for the alternat
 }
 
 function symbolGuardMs(symbolMs) {
-  return Math.min(Math.max(EDGE_IGNORE_MS, symbolMs * SYMBOL_GUARD_FRACTION), symbolMs * 0.42);
+  // The old 50 ms hard floor worked at 200 ms symbols, but at 120 ms it
+  // left only ~20 ms of usable center. Keep the guard proportional once
+  // symbols get short so the detector still has more than one 50 ms tick
+  // inside the stable part of the symbol.
+  const softFloor = Math.min(EDGE_IGNORE_MS, symbolMs * 0.18);
+  return Math.min(Math.max(softFloor, symbolMs * SYMBOL_GUARD_FRACTION), symbolMs * 0.42);
 }
 
 function scoreWindow(expectedFreq, start, end) {
@@ -1301,6 +1392,36 @@ function bitsToByte(bits) {
   return bits.reduce((value, bit) => (value << 1) | (bit ? 1 : 0), 0);
 }
 
+function byteToQuadSymbols(byte) {
+  return [
+    (byte >> 6) & 0x03,
+    (byte >> 4) & 0x03,
+    (byte >> 2) & 0x03,
+    byte & 0x03
+  ];
+}
+
+function bytesToQuadSymbols(bytes) {
+  return bytes.flatMap(byteToQuadSymbols);
+}
+
+function quadSymbolsToByte(symbols) {
+  return symbols.reduce((value, symbol) => (value << 2) | (symbol & 0x03), 0);
+}
+
+function bodySymbolsForBytes(bytes) {
+  return PACKET_BODY_MODE === 'quad' ? bytesToQuadSymbols(bytes) : bytes.flatMap(byteToBits);
+}
+
+function bodyTonesForBytes(bytes, mark, space) {
+  if (PACKET_BODY_MODE === 'quad') return bodySymbolsForBytes(bytes).map(symbol => PACKET_QUAD_FREQS[symbol]);
+  return bodySymbolsForBytes(bytes).map(bit => bit ? mark : space);
+}
+
+function bodySymbolCountForBytes(byteCount) {
+  return PACKET_BODY_MODE === 'quad' ? byteCount * 4 : byteCount * 8;
+}
+
 
 function getPacketFrameMode() {
   return els.packetFrameMode?.value || 'fast';
@@ -1332,12 +1453,13 @@ function resetMicroframeAssembly() {
 }
 
 function buildMicroframePlan(text = els.packetText.value || 'HELLO WORLD') {
-  const payload = textToBytes(text);
+  const rawPayload = textToBytes(text).filter(byte => byte !== PACKET_TERMINATOR_BYTE);
+  const payload = [...rawPayload, PACKET_TERMINATOR_BYTE];
   const totalSlots = Math.max(1, Math.ceil(payload.length / MICROFRAME_BYTES_PER_SLOT));
   const slots = [];
   for (let seq = 0; seq < totalSlots; seq++) {
     const offset = seq * MICROFRAME_BYTES_PER_SLOT;
-    slots.push({ seq, bytes: [payload[offset] ?? 95, payload[offset + 1] ?? 95] });
+    slots.push({ seq, bytes: [payload[offset] ?? PACKET_TERMINATOR_BYTE, payload[offset + 1] ?? PACKET_TERMINATOR_BYTE] });
   }
   const crc = crc16Ccitt(payload);
   return { payload, totalSlots, slots, crc, messageId: microframeMessageId };
@@ -1361,7 +1483,7 @@ function buildMicroframeCarouselFrames(text = els.packetText.value || 'HELLO WOR
   const plan = buildMicroframePlan(text);
   const dataFrames = plan.slots.map(slot => ({ type: 'data', seq: slot.seq, bytes: slot.bytes }));
   const metaFrame = { type: 'meta', messageId: plan.messageId, length: plan.payload.length, totalSlots: plan.totalSlots, crc: plan.crc };
-  return { ...plan, frames: [...dataFrames, metaFrame] };
+  return { ...plan, frames: PACKET_SEND_META ? [...dataFrames, metaFrame] : dataFrames };
 }
 
 function buildMicroframeBitsForFrame(frame, mode = getPacketFrameMode()) {
@@ -1441,9 +1563,11 @@ function observeMicroframe(decoded, now = performance.now()) {
     return { observation: 'meta' };
   }
   if (decoded.type !== 'data') return null;
-  const expectedSlots = microframeRx.meta?.totalSlots ?? buildMicroframePlan().totalSlots;
-  if (decoded.seq < 0 || decoded.seq >= expectedSlots) {
-    return { observation: 'out_of_range_seq', reason: `seq ${decoded.seq} outside expected 0..${expectedSlots - 1}` };
+  const knownSlots = microframeRx.meta?.totalSlots ?? null;
+  const slotLimit = knownSlots ?? PACKET_RX_MAX_SLOTS_WITHOUT_META;
+  if (decoded.seq < 0 || decoded.seq >= slotLimit) {
+    const limitLabel = knownSlots === null ? `blind safety limit ${slotLimit}` : `META total slots ${slotLimit}`;
+    return { observation: 'out_of_range_seq', reason: `seq ${decoded.seq} outside ${limitLabel}` };
   }
   const key = decoded.dataBytes.join(',');
   const slot = microframeRx.slots.get(decoded.seq) || { choices: new Map(), firstSeen: now, lastSeen: now };
@@ -1460,8 +1584,24 @@ function observeMicroframe(decoded, now = performance.now()) {
 
 function assembledBytesFromSlots() {
   const meta = microframeRx.meta;
-  const inferredSlots = microframeRx.slots.size ? Math.max(...microframeRx.slots.keys()) + 1 : 0;
-  const totalSlots = meta?.totalSlots ?? inferredSlots;
+  let totalSlots = 0;
+  let terminatorIndex = null;
+  if (meta) {
+    totalSlots = meta.totalSlots;
+  } else {
+    // Blind mode: only render the contiguous message from seq 0 onward.
+    // Random high seq garbage should not create a screen full of '?' slots.
+    for (let seq = 0; microframeRx.slots.has(seq); seq++) {
+      totalSlots = seq + 1;
+      const best = bestObservationForSlot(microframeRx.slots.get(seq));
+      const localTerm = best.bytes.findIndex(byte => byte === PACKET_TERMINATOR_BYTE);
+      if (localTerm !== -1) {
+        terminatorIndex = seq * MICROFRAME_BYTES_PER_SLOT + localTerm;
+        totalSlots = seq + 1;
+        break;
+      }
+    }
+  }
   const bytes = [];
   const missingSlots = [];
   for (let seq = 0; seq < totalSlots; seq++) {
@@ -1474,7 +1614,8 @@ function assembledBytesFromSlots() {
     const best = bestObservationForSlot(slot);
     bytes.push(...best.bytes);
   }
-  return { bytes: meta ? bytes.slice(0, meta.length) : bytes, totalSlots, missingSlots };
+  const displayBytes = meta ? bytes.slice(0, meta.length) : terminatorIndex !== null ? bytes.slice(0, terminatorIndex) : bytes;
+  return { bytes: displayBytes, rawBytes: bytes, totalSlots, missingSlots, terminatorIndex };
 }
 
 function updateMicroframeCompletion() {
@@ -1491,7 +1632,7 @@ function updateMicroframeCompletion() {
 
 function renderMicroframeAssembly() {
   if (!els.assembledMessage) return;
-  const { bytes, totalSlots, missingSlots } = assembledBytesFromSlots();
+  const { bytes, totalSlots, missingSlots, terminatorIndex } = assembledBytesFromSlots();
   els.assembledMessage.innerHTML = '';
   if (!bytes.length) {
     const span = document.createElement('span');
@@ -1524,10 +1665,19 @@ function renderMicroframeAssembly() {
   }
   const meta = microframeRx.meta;
   const receivedSlots = microframeRx.slots.size;
-  const crcText = !meta ? 'CRC pending: META/EOF not yet heard.' : microframeRx.finalCrcOk ? `Message complete: CRC 0x${meta.crc.toString(16).padStart(4, '0')} matched.` : microframeRx.finalCrcChecked ? `CRC failed against META/EOF 0x${meta.crc.toString(16).padStart(4, '0')}; keep listening for better observations.` : `CRC pending: META/EOF heard, waiting for ${missingSlots.length} missing slot(s).`;
-  const progressText = meta ? `${receivedSlots} / ${meta.totalSlots} slots observed` : `${receivedSlots} slot(s) observed; total unknown until META/EOF`;
+  let statusText;
+  if (meta) {
+    const crcText = microframeRx.finalCrcOk ? `Message complete: CRC 0x${meta.crc.toString(16).padStart(4, '0')} matched.` : microframeRx.finalCrcChecked ? `CRC failed against META/EOF 0x${meta.crc.toString(16).padStart(4, '0')}; keep listening for better observations.` : `CRC pending: META/EOF heard, waiting for ${missingSlots.length} missing slot(s).`;
+    statusText = `${receivedSlots} / ${meta.totalSlots} slots observed. ${crcText}`;
+  } else if (terminatorIndex !== null && !missingSlots.length) {
+    statusText = `${receivedSlots} slot(s) observed; NUL terminator accepted at byte ${terminatorIndex}; message complete by quorum/terminator.`;
+  } else if (terminatorIndex !== null) {
+    statusText = `${receivedSlots} slot(s) observed; NUL terminator seen at byte ${terminatorIndex}; waiting for ${missingSlots.length} earlier slot(s).`;
+  } else {
+    statusText = `${receivedSlots} slot(s) observed; waiting for NUL terminator. No META/EOF required in this build.`;
+  }
   microframeRx.lastAssembledText = bytes.map(byte => byte === null ? '?' : sanitizeByteForDisplay(byte)).join('');
-  microframeRx.lastStateLine = `${progressText}. ${crcText}`;
+  microframeRx.lastStateLine = statusText;
   els.assemblyStatus.textContent = microframeRx.lastStateLine;
 }
 
@@ -1574,21 +1724,22 @@ async function sendPacketOnce({ fromLoop = false } = {}) {
     const label = frame.type === 'meta' ? `META/EOF length ${plan.payload.length}, slots ${plan.totalSlots}, CRC 0x${plan.crc.toString(16).padStart(4, '0')}` : `microframe seq ${frame.seq}: ${frame.bytes.map(byte => sanitizeByteForDisplay(byte)).join('')}`;
     if (markerMode === 'tone') {
       const bodyBytes = buildToneDelimitedFrameBodyBytes(frame, mode);
-      const bits = bodyBytes.flatMap(byteToBits);
+      const bodyTones = bodyTonesForBytes(bodyBytes, mark, space);
       if (frame.type === 'meta') {
         sequence.push({ name: `first ${formatFreq(markerFreq)} META/EOF marker pulse for ${label}`, tones: [markerFreq], duration: PACKET_META_MARKER_PULSE_MS, gap: 0, afterGap: PACKET_META_MARKER_GAP_MS });
         sequence.push({ name: `second ${formatFreq(markerFreq)} META/EOF marker pulse for ${label}`, tones: [markerFreq], duration: PACKET_META_MARKER_PULSE_MS, gap: 0, afterGap: PACKET_MARKER_GUARD_MS });
       } else {
         sequence.push({ name: `${formatFreq(markerFreq)} marker for ${label}`, tones: [markerFreq], duration: markerDuration, gap: 0, afterGap: PACKET_MARKER_GUARD_MS });
       }
-      sequence.push({ name: `tone-delimited body ${label}`, tones: bits.map(bit => bit ? mark : space), duration: symbolMs, gap: 0, afterGap: Math.max(40, symbolMs * 0.5) });
+      sequence.push({ name: `${PACKET_BODY_MODE === 'quad' ? '4-FSK' : 'binary FSK'} tone-delimited body ${label}`, tones: bodyTones, duration: symbolMs, gap: 0, afterGap: Math.max(40, symbolMs * 0.5) });
     } else {
       const bits = buildMicroframeBitsForFrame(frame, mode);
       sequence.push({ name: label, tones: bits.map(bit => bit ? mark : space), duration: symbolMs, gap: 0, afterGap: Math.max(40, symbolMs * 0.5) });
     }
   }
-  const totalBits = plan.frames.reduce((sum, frame) => sum + (markerMode === 'tone' ? buildToneDelimitedFrameBodyBytes(frame, mode).length * 8 : buildMicroframeBitsForFrame(frame, mode).length), 0);
-  log('OK', `microframe carousel TX pass: ${plan.totalSlots} data slots + META/EOF, ${totalBits} body bits, ${mode} mode, ${markerMode === 'tone' ? `${formatFreq(markerFreq)} tone-delimited markers` : 'legacy alternating preamble'}`);
+  const totalSymbols = plan.frames.reduce((sum, frame) => sum + (markerMode === 'tone' ? bodySymbolCountForBytes(buildToneDelimitedFrameBodyBytes(frame, mode).length) : buildMicroframeBitsForFrame(frame, mode).length), 0);
+  const metaLabel = PACKET_SEND_META ? ' + META/EOF' : ' + NUL terminator, no META/EOF';
+  log('OK', `microframe carousel TX pass: ${plan.totalSlots} data slots${metaLabel}, ${totalSymbols} body symbols, ${PACKET_BODY_MODE === 'quad' ? '4-FSK' : 'binary FSK'}, ${mode} mode, ${markerMode === 'tone' ? `${formatFreq(markerFreq)} tone-delimited markers` : 'legacy alternating preamble'}`);
   await playSequence(sequence, TX_STATES.PATTERN, 'microframe carousel TX');
 }
 
@@ -1648,6 +1799,19 @@ function classifySymbolWindow(start, end, mark, space) {
   const spaceAvg = samples.reduce((sum, sample) => sum + Math.min(1, ((sample.meta?.energyMap?.[space]) || 0) / STRONG_ENERGY), 0) / samples.length;
   const confidence = Math.abs(markAvg - spaceAvg) / Math.max(0.01, markAvg + spaceAvg);
   return { bit: markAvg >= spaceAvg ? 1 : 0, confidence, markAvg, spaceAvg, samples, missing: false };
+}
+
+function classifyQuadSymbolWindow(start, end) {
+  const samples = traceBuffer.filter(s => s.timestamp >= start && s.timestamp <= end);
+  if (!samples.length) return { symbol: null, confidence: 0, bestAvg: 0, secondAvg: 0, samples: 0, missing: true };
+  const scored = PACKET_QUAD_FREQS.map((freq, symbol) => {
+    const avg = samples.reduce((sum, sample) => sum + Math.min(1, ((sample.meta?.energyMap?.[freq]) || 0) / STRONG_ENERGY), 0) / samples.length;
+    return { freq, symbol, avg };
+  }).sort((a, b) => b.avg - a.avg);
+  const best = scored[0];
+  const second = scored[1] || { avg: 0 };
+  const confidence = (best.avg - second.avg) / Math.max(0.01, best.avg + second.avg);
+  return { symbol: best.symbol, confidence, bestAvg: best.avg, secondAvg: second.avg, scored, samples, missing: false };
 }
 
 function decodePacketBits(bits, options = {}) {
@@ -1787,7 +1951,7 @@ function decodeMicroframeFrom(startTime, now = performance.now()) {
   return {
     ...decoded,
     bits,
-    groupedBits: bits.map((bit, index) => missing.includes(index + 1) ? '·' : uncertain.includes(index + 1) ? '?' : String(bit)).join('').replace(/(.{8})/g, '$1 ').trim(),
+    groupedBits: bits.map((bit, index) => missing.includes(index + 1) ? '·' : uncertain.includes(index + 1) ? '?' : String(bit)).join('').replace(new RegExp(`(.{${groupSize}})`, 'g'), '$1 ').trim(),
     preambleFound,
     preambleMatches,
     preambleBits,
@@ -1903,6 +2067,189 @@ function expectedSeq0FrameBytes() {
   return [0, ...(slot?.bytes ?? [])];
 }
 
+function decodeToneBytesAtOffset(markerEnd, offsetMs, byteCount) {
+  const symbolMs = Number(els.packetSymbol.value);
+  const mark = Number(els.packetMark.value);
+  const space = Number(els.packetSpace.value);
+  const startTime = markerEnd + offsetMs;
+  const bits = [];
+  const bitLabels = [];
+  const confidences = [];
+  for (let index = 0; index < byteCount * 8; index++) {
+    const guard = symbolGuardMs(symbolMs);
+    const classified = classifySymbolWindow(
+      startTime + index * symbolMs + guard,
+      startTime + (index + 1) * symbolMs - guard,
+      mark,
+      space
+    );
+    bitLabels.push(classified.missing ? '·' : String(classified.bit));
+    bits.push(classified.missing ? null : classified.bit);
+    confidences.push(classified.confidence);
+  }
+  const bytes = [];
+  for (let i = 0; i + 7 < bits.length; i += 8) {
+    const byteBits = bits.slice(i, i + 8);
+    bytes.push(byteBits.some(bit => bit === null) ? null : bitsToByte(byteBits));
+  }
+  return { bytes, bits: bitLabels.join(''), confidence: average(confidences) };
+}
+
+function expectedDataFramesForCurrentCarousel() {
+  return buildMicroframePlan().slots.map(slot => ({
+    seq: slot.seq,
+    frameBytes: [slot.seq & 0xff, slot.bytes[0] & 0xff, slot.bytes[1] & 0xff],
+    dataBytes: slot.bytes,
+    text: slot.bytes.map(byte => sanitizeByteForDisplay(byte)).join('')
+  }));
+}
+
+function compactKnownMatchSweep(decoded) {
+  if (decoded.knownMatchSweep !== undefined) return decoded.knownMatchSweep;
+  if (decoded.delimiterMode !== 'tone' || decoded.type !== 'data' || !decoded.markerEnd) return '';
+  const expectedFrames = expectedDataFramesForCurrentCarousel();
+  const lines = [];
+  for (let offset = -250; offset <= 300; offset += 25) {
+    const candidate = decodeToneBytesAtOffset(decoded.markerEnd, offset, 3);
+    if (candidate.bytes.some(byte => byte === null)) continue;
+    const match = expectedFrames.find(expected =>
+      expected.frameBytes.every((byte, index) => candidate.bytes[index] === byte)
+    );
+    if (!match) continue;
+    lines.push(`SWEEP_MATCH DATA off=${offset}ms seq=${match.seq} bytes=${compactBytes(candidate.bytes)} text="${match.text}" conf=${compactRatio(candidate.confidence)}`);
+  }
+  decoded.knownMatchSweep = lines.length ? `\n${lines.join('\n')}` : '';
+  return decoded.knownMatchSweep;
+}
+
+
+function expectedToneDataFramesForClockFit() {
+  const mode = getPacketFrameMode();
+  return buildMicroframePlan().slots.map(slot => {
+    const frameBytes = toneDelimitedBytesWithOptionalCheck([slot.seq & 0xff, slot.bytes[0] & 0xff, slot.bytes[1] & 0xff], mode);
+    return {
+      seq: slot.seq,
+      frameBytes,
+      dataBytes: slot.bytes,
+      text: slot.bytes.map(byte => sanitizeByteForDisplay(byte)).join('')
+    };
+  });
+}
+
+function scoreExpectedBitsWithClock(markerEnd, offsetMs, candidateSymbolMs, expectedBits, mark, space) {
+  let match = 0;
+  let decided = 0;
+  let confidenceSum = 0;
+  let score = 0;
+  const bitLabels = [];
+  for (let index = 0; index < expectedBits.length; index++) {
+    const guard = symbolGuardMs(candidateSymbolMs);
+    const classified = classifySymbolWindow(
+      markerEnd + offsetMs + index * candidateSymbolMs + guard,
+      markerEnd + offsetMs + (index + 1) * candidateSymbolMs - guard,
+      mark,
+      space
+    );
+    if (classified.missing) {
+      bitLabels.push('·');
+      score -= 0.20;
+      continue;
+    }
+    decided += 1;
+    confidenceSum += classified.confidence;
+    const weight = Math.max(0.05, classified.confidence);
+    if (classified.bit === expectedBits[index]) {
+      match += 1;
+      score += weight;
+    } else {
+      score -= weight;
+    }
+    bitLabels.push(String(classified.bit));
+  }
+  return {
+    match,
+    decided,
+    confidence: decided ? confidenceSum / decided : 0,
+    score: score / Math.max(1, expectedBits.length),
+    bits: bitLabels.join('')
+  };
+}
+
+function decodeToneBytesAtClock(markerEnd, offsetMs, candidateSymbolMs, byteCount) {
+  const mark = Number(els.packetMark.value);
+  const space = Number(els.packetSpace.value);
+  const bits = [];
+  const bitLabels = [];
+  const confidences = [];
+  for (let index = 0; index < byteCount * 8; index++) {
+    const guard = symbolGuardMs(candidateSymbolMs);
+    const classified = classifySymbolWindow(
+      markerEnd + offsetMs + index * candidateSymbolMs + guard,
+      markerEnd + offsetMs + (index + 1) * candidateSymbolMs - guard,
+      mark,
+      space
+    );
+    bitLabels.push(classified.missing ? '·' : String(classified.bit));
+    bits.push(classified.missing ? null : classified.bit);
+    confidences.push(classified.confidence);
+  }
+  const bytes = [];
+  for (let i = 0; i + 7 < bits.length; i += 8) {
+    const byteBits = bits.slice(i, i + 8);
+    bytes.push(byteBits.some(bit => bit === null) ? null : bitsToByte(byteBits));
+  }
+  return { bytes, bits: bitLabels.join(''), confidence: average(confidences) };
+}
+
+function clockFitCandidatesForFrames(markerEnd, frames, nominalSymbolMs, mark, space) {
+  const candidates = [];
+  for (let symbolDelta = -PACKET_CLOCKFIT_SYMBOL_DELTA_MS; symbolDelta <= PACKET_CLOCKFIT_SYMBOL_DELTA_MS; symbolDelta += PACKET_CLOCKFIT_SYMBOL_STEP_MS) {
+    const candidateSymbolMs = nominalSymbolMs + symbolDelta;
+    if (candidateSymbolMs < 40) continue;
+    for (let offset = PACKET_CLOCKFIT_OFFSET_MIN_MS; offset <= PACKET_CLOCKFIT_OFFSET_MAX_MS; offset += PACKET_CLOCKFIT_OFFSET_STEP_MS) {
+      for (const frame of frames) {
+        const expectedBits = frame.frameBytes.flatMap(byteToBits);
+        const scored = scoreExpectedBitsWithClock(markerEnd, offset, candidateSymbolMs, expectedBits, mark, space);
+        candidates.push({ frame, offset, symbolMs: candidateSymbolMs, symbolDelta, expectedBits, ...scored });
+      }
+    }
+  }
+  candidates.sort((a, b) =>
+    (b.score - a.score) ||
+    (b.match - a.match) ||
+    (b.confidence - a.confidence) ||
+    (Math.abs(a.symbolDelta) - Math.abs(b.symbolDelta)) ||
+    (Math.abs(a.offset - PACKET_RX_BODY_OFFSET_MS) - Math.abs(b.offset - PACKET_RX_BODY_OFFSET_MS))
+  );
+  return candidates;
+}
+
+function compactClockFitSweep(decoded) {
+  if (decoded.clockFitSweep !== undefined) return decoded.clockFitSweep;
+  if (decoded.delimiterMode !== 'tone' || decoded.type !== 'data' || !decoded.markerEnd) return '';
+  const nominalSymbolMs = Number(els.packetSymbol.value);
+  const mark = Number(els.packetMark.value);
+  const space = Number(els.packetSpace.value);
+  const allFrames = expectedToneDataFramesForClockFit();
+  const inRangeFrames = allFrames.filter(frame => frame.seq === decoded.seq);
+  let candidates = clockFitCandidatesForFrames(decoded.markerEnd, inRangeFrames.length ? inRangeFrames : allFrames, nominalSymbolMs, mark, space);
+  if (inRangeFrames.length && candidates.length && candidates[0].match < Math.ceil(candidates[0].expectedBits.length * 0.75)) {
+    candidates = clockFitCandidatesForFrames(decoded.markerEnd, allFrames, nominalSymbolMs, mark, space);
+  }
+  const best = candidates[0];
+  if (!best) {
+    decoded.clockFitSweep = '';
+    return decoded.clockFitSweep;
+  }
+  const observed = decodeToneBytesAtClock(decoded.markerEnd, best.offset, best.symbolMs, best.frame.frameBytes.length);
+  const startDelta = best.offset - PACKET_RX_BODY_OFFSET_MS;
+  const endDrift = best.symbolDelta * best.expectedBits.length;
+  const seqNote = decoded.seq === best.frame.seq ? '' : ` decodedSeq=${decoded.seq}`;
+  const top = candidates.slice(0, 3).map(item => `seq${item.frame.seq}@${Math.round(item.offset)}/${Math.round(item.symbolMs)}=${item.match}/${item.expectedBits.length}`).join(' ');
+  decoded.clockFitSweep = `\nCLOCKFIT DATA bestSeq=${best.frame.seq}${seqNote} off=${Math.round(best.offset)}ms startΔ=${Math.round(startDelta)}ms sym=${Math.round(best.symbolMs)}ms symΔ=${Math.round(best.symbolDelta)}ms endDrift=${Math.round(endDrift)}ms match=${best.match}/${best.expectedBits.length} score=${compactRatio((best.score + 1) / 2)} conf=${compactRatio(best.confidence)} bytes=${compactBytes(observed.bytes)} expected=${compactBytes(best.frame.frameBytes)}\nCLOCKFIT_TOP ${top}`;
+  return decoded.clockFitSweep;
+}
+
 function compactOffsetSweep(decoded) {
   if (decoded.compactOffsetSweep !== undefined) return decoded.compactOffsetSweep;
   if (decoded.delimiterMode !== 'tone' || decoded.type !== 'data' || packetBadSeq0SweepDone || !decoded.markerEnd) return '';
@@ -1942,14 +2289,26 @@ function compactOffsetSweep(decoded) {
   return decoded.compactOffsetSweep;
 }
 
+
+function compactAdaptiveRx(decoded) {
+  if (!decoded.adaptiveRx) return '';
+  const top = decoded.adaptiveRx.top
+    .map(item => `${Math.round(item.offset)}ms:${compactRatio(item.score)}:${item.seq === null ? '--' : item.seq}`)
+    .join(' ');
+  const selected = decoded.adaptiveRx.selectedOffset;
+  const delta = selected - decoded.adaptiveRx.nominalOffset;
+  return `\nADAPT_RX selected=${Math.round(selected)}ms delta=${Math.round(delta)}ms score=${compactRatio(decoded.adaptiveRx.score)} top=${top}`;
+}
+
 function formatPacketDiagnostic(decoded, label = 'Decode candidate') {
   const prefix = decoded.type === 'meta' ? 'META' : decoded.type === 'data' ? 'DATA' : label;
   const common = `marker=${Math.round(decoded.markerFrequency || getPacketMarkerFreq())} strength=${compactRatio(decoded.markerStrength)} dur=${Math.round(decoded.markerDurationSeen || 0)}ms guard=${Math.round(decoded.guardGapMs ?? PACKET_MARKER_GUARD_MS)} rxOff=${Math.round(decoded.rxBodyOffsetMs ?? PACKET_RX_BODY_OFFSET_MS)}`;
   if (decoded.type === 'meta') return `${prefix} ${common} len=${decoded.length} slots=${decoded.totalSlots} crc=${decoded.crc.toString(16).padStart(4, '0')}`;
   if (decoded.type === 'data') {
-    const expected = expectedDataBytesForSeq(decoded.seq);
+    const expected = PACKET_EXPECTED_DEBUG_LOGS ? expectedDataBytesForSeq(decoded.seq) : [];
+    const expectedPart = PACKET_EXPECTED_DEBUG_LOGS ? ` expected=${compactBytes(expected)}` : '';
     const text = decoded.dataBytes.map(byte => sanitizeByteForDisplay(byte)).join('');
-    return `${prefix} ${common} seq=${decoded.seq} bytes=${compactBytes(decoded.dataBytes)} text="${text}" conf=${compactRatio(decoded.confidence)} expected=${compactBytes(expected)}${compactOffsetSweep(decoded)}`;
+    return `${prefix} ${common} seq=${decoded.seq} bytes=${compactBytes(decoded.dataBytes)} text="${text}" conf=${compactRatio(decoded.confidence)}${expectedPart}${compactAdaptiveRx(decoded)}${PACKET_VERBOSE_ORACLE_LOGS ? compactKnownMatchSweep(decoded) + compactClockFitSweep(decoded) : ''}`;
   }
   return `${prefix} ${common} result=${decoded.finalResult} bytes=${compactBytes(decoded.rawFrameBytes || [])} conf=${compactRatio(decoded.confidence)}`;
 }
@@ -2016,34 +2375,136 @@ function findToneMarkerCandidate(now) {
   return { state: 'watching marker tone', reason: 'no usable marker pattern yet', markerFrequency: markerFreq };
 }
 
-function decodeToneDelimitedMicroframe(marker, now = performance.now()) {
+
+function packetRxOffsetCandidates(marker) {
+  const offsets = new Set();
+  const add = value => {
+    const rounded = Math.round(value / PACKET_RX_OFFSET_STEP_MS) * PACKET_RX_OFFSET_STEP_MS;
+    if (rounded >= PACKET_RX_OFFSET_MIN_MS && rounded <= PACKET_RX_OFFSET_MAX_MS) offsets.add(rounded);
+  };
+  for (let offset = PACKET_RX_OFFSET_MIN_MS; offset <= PACKET_RX_OFFSET_MAX_MS; offset += PACKET_RX_OFFSET_STEP_MS) add(offset);
+  add(PACKET_RX_BODY_OFFSET_MS);
+  const markerDuration = getPacketMarkerDurationMs();
+  const seenDuration = marker.markerDurationSeen ?? markerDuration;
+  const durationCompensated = PACKET_MARKER_GUARD_MS + Math.max(0, markerDuration - seenDuration);
+  for (const delta of [-75, -50, -25, 0, 25, 50, 75]) add(durationCompensated + delta);
+  return [...offsets].sort((a, b) => a - b);
+}
+
+function decodeToneDelimitedMicroframeAtOffset(marker, offsetMs, now = performance.now()) {
   const mark = Number(els.packetMark.value);
   const space = Number(els.packetSpace.value);
   const symbolMs = Number(els.packetSymbol.value);
   const mode = getPacketFrameMode();
   const markerPattern = marker.markerPattern || 'unknown';
   const expectedFrameBytes = markerPattern === 'META' ? (mode === 'checked' ? 6 : 5) : (mode === 'checked' ? 4 : 3);
-  const startTime = marker.markerEnd + PACKET_RX_BODY_OFFSET_MS;
-  const bits = [];
+  const expectedSymbols = bodySymbolCountForBytes(expectedFrameBytes);
+  const startTime = marker.markerEnd + offsetMs;
+  const symbols = [];
   const uncertain = [];
   const missing = [];
   const confidences = [];
-  for (let index = 0; index < expectedFrameBytes * 8; index++) {
+  for (let index = 0; index < expectedSymbols; index++) {
     const guard = symbolGuardMs(symbolMs);
     const start = startTime + index * symbolMs + guard;
     const end = startTime + (index + 1) * symbolMs - guard;
     if (now < end) break;
-    const classified = classifySymbolWindow(start, end, mark, space);
+    const classified = PACKET_BODY_MODE === 'quad' ? classifyQuadSymbolWindow(start, end) : classifySymbolWindow(start, end, mark, space);
     const position = index + 1;
     if (classified.missing) { missing.push(position); break; }
-    bits.push(classified.bit);
+    const value = PACKET_BODY_MODE === 'quad' ? classified.symbol : classified.bit;
+    symbols.push(value);
     confidences.push(classified.confidence);
-    if (classified.confidence < 0.18 || Math.max(classified.markAvg, classified.spaceAvg) < 0.10) uncertain.push(position);
+    const peak = PACKET_BODY_MODE === 'quad' ? classified.bestAvg : Math.max(classified.markAvg, classified.spaceAvg);
+    if (classified.confidence < 0.18 || peak < 0.10) uncertain.push(position);
   }
   const rawFrameBytes = [];
-  for (let i = 0; i + 7 < bits.length; i += 8) rawFrameBytes.push(bitsToByte(bits.slice(i, i + 8)));
+  if (PACKET_BODY_MODE === 'quad') {
+    for (let i = 0; i + 3 < symbols.length; i += 4) rawFrameBytes.push(quadSymbolsToByte(symbols.slice(i, i + 4)));
+  } else {
+    for (let i = 0; i + 7 < symbols.length; i += 8) rawFrameBytes.push(bitsToByte(symbols.slice(i, i + 8)));
+  }
   const decoded = decodeToneDelimitedFrameBytes(rawFrameBytes, markerPattern, mode);
-  return decorateToneDelimitedDecoded(decoded, { bits, rawFrameBytes, uncertain, missing, confidences, marker, expectedFrameBytes, now, startTime, mode });
+  return decorateToneDelimitedDecoded(decoded, { bits: symbols, rawFrameBytes, uncertain, missing, confidences, marker, expectedFrameBytes, expectedSymbols, now, startTime, offsetMs, mode });
+}
+
+function scoreAdaptiveToneDecode(decoded, offsetMs, marker) {
+  if (!decoded.complete) return -999;
+  let score = decoded.confidence || 0;
+  score -= decoded.uncertain.length * 0.015;
+  score -= decoded.missing.length * 0.10;
+  if (decoded.checkPassed === true) score += 0.35;
+  if (decoded.checkPassed === false) score -= 0.80;
+  if (decoded.type === 'data') {
+    const knownSlots = microframeRx.meta?.totalSlots ?? null;
+    if (knownSlots === null) {
+      if (decoded.seq >= 0 && decoded.seq < PACKET_RX_MAX_SLOTS_WITHOUT_META) score += 0.04;
+      else score -= 0.60;
+    } else if (decoded.seq >= 0 && decoded.seq < knownSlots) score += 0.12;
+    else score -= 0.60;
+    const slot = microframeRx.slots.get(decoded.seq);
+    if (slot) {
+      const key = decoded.dataBytes.join(',');
+      const sameChoice = slot.choices.get(key);
+      if (sameChoice) score += Math.min(0.35, sameChoice.count * 0.10);
+      else if (slot.choices.size) score -= 0.08;
+    }
+  } else if (decoded.type === 'meta') {
+    if (decoded.length > 0 && decoded.length < 256 && decoded.totalSlots > 0 && decoded.totalSlots < 128) score += 0.04;
+    else score -= 0.30;
+  }
+  const markerDuration = getPacketMarkerDurationMs();
+  const seenDuration = marker.markerDurationSeen ?? markerDuration;
+  const durationCompensated = PACKET_MARKER_GUARD_MS + Math.max(0, markerDuration - seenDuration);
+  score -= Math.abs(offsetMs - durationCompensated) / 2000;
+  return score;
+}
+
+function chooseAdaptiveToneDecode(marker, now) {
+  const offsets = packetRxOffsetCandidates(marker);
+  const symbolMs = Number(els.packetSymbol.value);
+  const mode = getPacketFrameMode();
+  const markerPattern = marker.markerPattern || 'unknown';
+  const expectedFrameBytes = markerPattern === 'META' ? (mode === 'checked' ? 6 : 5) : (mode === 'checked' ? 4 : 3);
+  const expectedSymbols = bodySymbolCountForBytes(expectedFrameBytes);
+  const maxOffset = Math.max(...offsets);
+  const latestEnd = marker.markerEnd + maxOffset + expectedSymbols * symbolMs;
+  if (now < latestEnd) {
+    const partial = decodeToneDelimitedMicroframeAtOffset(marker, PACKET_RX_BODY_OFFSET_MS, now);
+    partial.reason = `waiting for adaptive offset window (${Math.round(latestEnd - now)} ms remaining)`;
+    return partial;
+  }
+  const candidates = offsets.map(offset => {
+    const decoded = decodeToneDelimitedMicroframeAtOffset(marker, offset, now);
+    return { offset, decoded, score: scoreAdaptiveToneDecode(decoded, offset, marker) };
+  }).filter(candidate => candidate.decoded.complete);
+  candidates.sort((a, b) =>
+    (b.score - a.score) ||
+    ((b.decoded.confidence || 0) - (a.decoded.confidence || 0)) ||
+    (Math.abs(a.offset - PACKET_RX_BODY_OFFSET_MS) - Math.abs(b.offset - PACKET_RX_BODY_OFFSET_MS))
+  );
+  const best = candidates[0] || decodeToneDelimitedMicroframeAtOffset(marker, PACKET_RX_BODY_OFFSET_MS, now);
+  const decoded = best.decoded || best;
+  if (best.offset !== undefined) {
+    decoded.adaptiveRx = {
+      selectedOffset: best.offset,
+      nominalOffset: PACKET_RX_BODY_OFFSET_MS,
+      score: best.score,
+      top: candidates.slice(0, 4).map(candidate => ({
+        offset: candidate.offset,
+        score: candidate.score,
+        confidence: candidate.decoded.confidence,
+        seq: candidate.decoded.seq ?? null,
+        bytes: candidate.decoded.rawFrameBytes ? [...candidate.decoded.rawFrameBytes] : []
+      }))
+    };
+  }
+  return decoded;
+}
+
+function decodeToneDelimitedMicroframe(marker, now = performance.now()) {
+  if (PACKET_RX_ADAPTIVE_OFFSETS) return chooseAdaptiveToneDecode(marker, now);
+  return decodeToneDelimitedMicroframeAtOffset(marker, PACKET_RX_BODY_OFFSET_MS, now);
 }
 
 function decodeToneDelimitedFrameBytes(bytes, markerPattern, mode = getPacketFrameMode()) {
@@ -2068,12 +2529,13 @@ function decodeToneDelimitedFrameBytes(bytes, markerPattern, mode = getPacketFra
 }
 
 function decorateToneDelimitedDecoded(decoded, details) {
-  const { bits, rawFrameBytes, uncertain, missing, confidences, marker, expectedFrameBytes, startTime, mode } = details;
-  const expectedBits = expectedFrameBytes * 8;
+  const { bits, rawFrameBytes, uncertain, missing, confidences, marker, expectedFrameBytes, expectedSymbols, startTime, offsetMs, mode } = details;
+  const expectedBits = expectedSymbols ?? bodySymbolCountForBytes(expectedFrameBytes);
+  const groupSize = PACKET_BODY_MODE === 'quad' ? 4 : 8;
   return {
     ...decoded,
     bits,
-    groupedBits: bits.map((bit, index) => missing.includes(index + 1) ? '·' : uncertain.includes(index + 1) ? '?' : String(bit)).join('').replace(/(.{8})/g, '$1 ').trim(),
+    groupedBits: bits.map((bit, index) => missing.includes(index + 1) ? '·' : uncertain.includes(index + 1) ? '?' : String(bit)).join('').replace(new RegExp(`(.{${groupSize}})`, 'g'), '$1 ').trim(),
     preambleFound: false,
     preambleMatches: 0,
     preambleBits: 0,
@@ -2087,7 +2549,7 @@ function decorateToneDelimitedDecoded(decoded, details) {
     markerStart: marker.markerStart,
     markerEnd: marker.markerEnd,
     guardGapMs: PACKET_MARKER_GUARD_MS,
-    rxBodyOffsetMs: PACKET_RX_BODY_OFFSET_MS,
+    rxBodyOffsetMs: offsetMs ?? PACKET_RX_BODY_OFFSET_MS,
     bodyStart: startTime,
     rawFrameBytes,
     expectedBits,
@@ -2195,7 +2657,7 @@ function scanToneDelimitedPackets(now) {
     return;
   }
   packetLastMarkerStart = marker.markerStart;
-  packetSeenUntil = marker.markerEnd + PACKET_RX_BODY_OFFSET_MS + decoded.expectedBits * Number(els.packetSymbol.value) + Number(els.packetSymbol.value) * 0.75;
+  packetSeenUntil = marker.markerEnd + (decoded.rxBodyOffsetMs ?? PACKET_RX_BODY_OFFSET_MS) + decoded.expectedBits * Number(els.packetSymbol.value) + Number(els.packetSymbol.value) * 0.75;
   packetRxArmTime = Math.max(packetRxArmTime, marker.markerEnd);
   if (decoded.finalResult === 'OK') observeMicroframe(decoded, now);
   const record = addPacketLogRecord(decoded, now);
@@ -2437,6 +2899,7 @@ renderResults();
 attachEvents();
 setInterval(detect, DETECT_INTERVAL_MS);
 animationLoop();
+
 </script>
 </body>
 </html>
