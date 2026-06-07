@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Ultrasonic Playground</title>
+  <title>Mark4 Text Painter</title>
   <style>
     :root {
       color-scheme: dark;
@@ -168,6 +168,37 @@
     .bar-track { background: var(--soft); border-radius: 999px; height: 0.45rem; overflow: hidden; }
     .bar-fill { background: linear-gradient(90deg, #227fa4, var(--accent)); height: 100%; width: 0%; opacity: 0.86; }
 
+    .tone-signal-strip {
+      display: grid;
+      gap: 0.32rem;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      margin: 0.65rem 0 0.85rem;
+    }
+
+    .tone-signal-cell {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(14, 25, 38, 0.7);
+      min-width: 0;
+      padding: 0.36rem 0.38rem;
+    }
+
+    .tone-signal-strip { cursor: pointer; }
+
+    .tone-signal-top {
+      align-items: center;
+      display: grid;
+      gap: 0.08rem;
+      justify-items: center;
+      margin-bottom: 0.32rem;
+      min-width: 0;
+    }
+
+    .tone-signal-name { color: var(--muted); font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.035em; white-space: nowrap; }
+    .tone-signal-value { color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.66rem; white-space: nowrap; }
+    .tone-signal-strip.meter-off { opacity: 0.36; filter: grayscale(1); }
+    .tone-signal-strip.meter-off .bar-fill { width: 0% !important; opacity: 0.35; }
+
     .results, .log {
       display: grid;
       gap: 0.45rem;
@@ -228,18 +259,31 @@
       flex-wrap: wrap;
       gap: 0.7rem;
     }
-    #packetExportJson {
+.text-painter-summary {
+      display: grid;
+      gap: 0.4rem;
+      grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+      margin: 0.75rem 0;
+    }
+    .text-painter-card {
       background: #0b1420;
       border: 1px solid var(--line);
-      border-radius: 10px;
-      color: var(--muted);
-      font: 0.78rem/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      min-height: 2.6rem;
-      padding: 0.55rem 0.7rem;
-      resize: vertical;
-      width: 100%;
+      border-radius: 12px;
+      padding: 0.5rem 0.62rem;
     }
-    #packetExportJson[hidden] { display: none; }
+    .text-painter-card strong { color: var(--accent-strong); display: block; font-size: 1.05rem; overflow-wrap: anywhere; }
+    .modem-actions button { font-size: 1rem; padding: 0.68rem 1rem; }
+    .modem-actions button.primary { min-width: 11rem; }
+    .text-painter-dev {
+      border-top: 1px solid var(--line);
+      margin-top: 0.9rem;
+      padding-top: 0.75rem;
+    }
+    .text-painter-dev summary { color: var(--accent-strong); cursor: pointer; font-weight: 700; margin-bottom: 0.7rem; }
+    .text-painter-frame-list {
+      max-height: 22rem;
+      overflow: auto;
+    }
     .inline-label { align-items: center; display: flex; gap: 0.45rem; min-width: auto; }
 
     .pill {
@@ -272,8 +316,8 @@
     <div class="row" id="closedPanels"></div>
   </details>
   <header data-panel-title="Intro">
-    <h1>Ultrasonic Playground</h1>
-    <p>Browser speaker/mic tone lab and sync tester. One quiet frequency trace makes nearly silent high-frequency activity visible.</p>
+    <h1>Mark4 Text Painter</h1>
+    <p>Browser speaker/mic tone lab and compact flat-5 text-painter modem. Packet-FSK, alternating preamble tests, and the old 12-test sweep have been retired from this keeper build.</p>
     <p class="hint"><a href="index.html">Back to Hellschreiber toy</a></p>
   </header>
 
@@ -300,8 +344,6 @@
     <div class="row">
       <button id="playTone" class="primary">Play Tone</button>
       <button id="playSweep">Play Sweep</button>
-      <button id="playPattern">Play Pattern</button>
-      <button id="syncTx">Sync TX</button>
     </div>
   </section>
 
@@ -309,7 +351,6 @@
     <h2 id="rxTitle">Receive</h2>
     <div class="row">
       <button id="listen" class="primary">Start Listening</button>
-      <button id="syncRx">Sync RX</button>
       <button id="liveBtn">Live</button>
       <label>Trace gain
         <select id="traceGain">
@@ -344,87 +385,76 @@
     <div id="activityBars" aria-label="Accumulated frequency activity evidence"></div>
   </section>
 
-  <div class="grid">
-    <section aria-labelledby="syncTitle" data-panel-title="Sync / Test Results">
-      <h2 id="syncTitle">Sync / Test Results</h2>
-      <p class="hint">Workflow: start listening, press Sync RX, wait for sync, then press Sync TX on the other device. RX waits for the preamble before scoring, so simultaneous taps are not required.</p>
-      <div class="results" id="results"></div>
-      <p id="recommendation">Recommended profile: waiting for sync data.</p>
-    </section>
-
-    <section aria-labelledby="logTitle" data-panel-title="Decoded / Log">
+  <section aria-labelledby="logTitle" data-panel-title="Decoded / Log">
       <h2 id="logTitle">Decoded / Log</h2>
       <div class="log" id="log"></div>
     </section>
-  </div>
-
-  <section class="packet-panel" aria-labelledby="packetTitle" data-panel-title="Microframe Carousel FSK">
-    <h2 id="packetTitle">Microframe Carousel FSK</h2>
-    <p class="hint">Tone-delimited microframe carousel: a short 15 kHz marker starts each frame, then two-tone FSK body bits carry seq/data or META/EOF fields. RX can join mid-loop and progressively assemble readable text.</p>
+  <section class="packet-panel text-painter-main" aria-labelledby="textPainterTitle" data-panel-title="Mark4 Text Painter">
+    <h2 id="textPainterTitle">Mark4 Text Painter</h2>
     <div class="control-row">
-      <label>Mark / bit 1
-        <select id="packetMark"></select>
+      <label>Message
+        <input id="textPainterText" type="text" value="can you hear me now?" maxlength="64">
       </label>
-      <label>Space / bit 0
-        <select id="packetSpace"></select>
+      <label>Frame width
+        <select id="textPainterBurstCap">
+          <option value="2" selected>2 adjacent chars</option>
+          <option value="3">3 adjacent chars</option>
+        </select>
       </label>
-      <label>Frame marker
+      <label>Symbol length
+        <select id="textPainterSymbol">
+          <option value="300">300 ms</option>
+          <option value="200" selected>200 ms</option>
+          <option value="160">160 ms</option>
+          <option value="120">120 ms</option>
+        </select>
+      </label>
+      <label>Marker tone
         <select id="packetMarkerFreq"></select>
       </label>
       <label>Marker duration ms
         <input id="packetMarkerDuration" type="number" min="120" max="800" step="10" value="280">
       </label>
-      <label>Marker mode
-        <select id="packetMarkerMode">
-          <option value="tone" selected>Tone-delimited</option>
-          <option value="legacy">Legacy alternating preamble</option>
-        </select>
-      </label>
-      <label>Symbol length
-        <select id="packetSymbol">
-          <option value="500">500 ms</option>
-          <option value="300">300 ms</option>
-          <option value="200" selected>200 ms</option>
-          <option value="120">120 ms</option>
-          <option value="80">80 ms</option>
-        </select>
-      </label>
-      <label>Frame mode
-        <select id="packetFrameMode">
-          <option value="fast" selected>Fast / unverified</option>
-          <option value="checked">Checked / verified</option>
-        </select>
-      </label>
-      <label>Carousel text
-        <input id="packetText" type="text" value="HELLO WORLD" maxlength="48">
-      </label>
-      <label>Loop gap seconds
-        <input id="packetInterval" type="number" min="0" max="10" step="0.25" value="0.5">
-      </label>
     </div>
-    <div class="row">
-      <button id="sendPacket" class="primary">Send Carousel Pass</button>
-      <button id="startPacketLoop">Start Carousel</button>
-      <button id="stopPacketLoop">Stop Loop</button>
-      <button id="packetRx">Receive Mode</button>
-      <button id="packetSelfTest">Microframe self-test</button>
-      <button id="packetExportLogs">Export Logs</button>
+    <div class="row modem-actions">
+      <button id="textPainterPlay" class="primary">Start TX Carousel</button>
+      <button id="textPainterRx">Arm RX</button>
+      <button id="textPainterReset">Clear Paint</button>
     </div>
-    <div class="packet-export-tools" aria-live="polite">
-      <textarea id="packetExportJson" aria-label="Exported packet log" readonly hidden></textarea>
-      <div class="packet-export-copy-row">
-        <button id="packetCopyJson" type="button" disabled>Copy Log</button>
-        <span id="packetExportStatus" class="hint">Exported log will appear here after export.</span>
-      </div>
+    <div class="text-painter-summary modem-status" aria-live="polite">
+      <div class="text-painter-card"><span class="hint">TX</span><strong id="textPainterCharCount">idle</strong></div>
+      <div class="text-painter-card"><span class="hint">Frame hits</span><strong id="textPainterBatchCount">0</strong></div>
+      <div class="text-painter-card"><span class="hint">Verified</span><strong id="textPainterFrameCount">0</strong></div>
+      <div class="text-painter-card"><span class="hint">Conflicts</span><strong id="textPainterQuadCount">0</strong></div>
+      <div class="text-painter-card"><span class="hint">Marker</span><strong id="textPainterLargestBurst">0%</strong></div>
+      <div class="text-painter-card"><span class="hint">Peak</span><strong id="textPainterReadablePass">--</strong></div>
+    </div>
+    <div class="tone-signal-strip" aria-label="Live Mark4 tone strength">
+      <div class="tone-signal-cell"><div class="tone-signal-top"><span class="tone-signal-name">Mark</span><span class="tone-signal-value" id="textPainterSignalMarkVal">0%</span></div><div class="bar-track"><div class="bar-fill" id="textPainterSignalMark"></div></div></div>
+      <div class="tone-signal-cell"><div class="tone-signal-top"><span class="tone-signal-name">D0</span><span class="tone-signal-value" id="textPainterSignalD0Val">0%</span></div><div class="bar-track"><div class="bar-fill" id="textPainterSignalD0"></div></div></div>
+      <div class="tone-signal-cell"><div class="tone-signal-top"><span class="tone-signal-name">D1</span><span class="tone-signal-value" id="textPainterSignalD1Val">0%</span></div><div class="bar-track"><div class="bar-fill" id="textPainterSignalD1"></div></div></div>
+      <div class="tone-signal-cell"><div class="tone-signal-top"><span class="tone-signal-name">D2</span><span class="tone-signal-value" id="textPainterSignalD2Val">0%</span></div><div class="bar-track"><div class="bar-fill" id="textPainterSignalD2"></div></div></div>
+      <div class="tone-signal-cell"><div class="tone-signal-top"><span class="tone-signal-name">D3</span><span class="tone-signal-value" id="textPainterSignalD3Val">0%</span></div><div class="bar-track"><div class="bar-fill" id="textPainterSignalD3"></div></div></div>
     </div>
     <h3>Assembled Message</h3>
-    <div class="assembled-message" id="assembledMessage" aria-live="polite"></div>
-    <div class="packet-output" id="assemblyStatus">No observations yet. CRC pending.</div>
-    <h3>Live Microframe RX Status</h3>
-    <div class="packet-output" id="packetLiveStatus">Microframe RX idle.</div>
-    <h3>Candidate / Microframe Log</h3>
-    <div class="packet-output" id="packetOut">No candidate or microframe records yet.</div>
+    <div class="assembled-message" id="textPainterAssembled" aria-live="polite"></div>
+    <div class="packet-output" id="textPainterAssemblyStatus">No received paint yet.</div>
+    <div class="packet-output" id="textPainterLiveStatus">RX idle.</div>
+
+    <details class="text-painter-dev">
+      <summary>Developer / frame plan</summary>
+      <div class="row">
+        <button id="textPainterPlan">Rebuild Plan</button>
+        <button id="textPainterSendOnce">Send One Pass</button>
+        <button id="textPainterNext">Sim Next Paint Frame</button>
+        <button id="textPainterOnePass">Sim One Pass</button>
+        <button id="textPainterThreePasses">Sim 3 Passes</button>
+      </div>
+      <h3>Planner / Frame List</h3>
+      <div class="packet-output text-painter-frame-list" id="textPainterPlanOut">The frame plan rebuilds automatically when message, width, or timing changes.</div>
+    </details>
   </section>
+
 </main>
 
 <script>
@@ -447,8 +477,6 @@ const FADE_MS = 18;
 const SYNC_GAP_MS = 90;
 const EDGE_IGNORE_MS = 50;
 const SYMBOL_GUARD_FRACTION = 0.24;
-const SYNC_PREAMBLE_SYMBOL_MS = 100;
-const SYNC_PREAMBLE_BITS = Array.from({ length: 12 }, (_, index) => index % 2 ? 0 : 1);
 const MICROFRAME_DATA_SYNC = 0xa7;
 const MICROFRAME_META_SYNC = 0x5a;
 const MICROFRAME_BYTES_PER_SLOT = 2;
@@ -479,6 +507,26 @@ const PACKET_MARKER_THRESHOLD = 0.18;
 const PACKET_MARKER_MIN_MS = 110;
 const PACKET_MARKER_SPLIT_MS = 120;
 const PACKET_MARKER_META_MAX_GAP_MS = 190;
+const TEXT30_MARKER_FREQ = 15000;
+const TEXT30_MARKER_PULSE_MS = 150;
+const TEXT30_MARKER_GUARD_MS = 100;
+const TEXT30_VERIFY_COUNT = 2;
+// Flat-5 live RX should not need the receiver to know the outgoing text.
+// Keep group index width fixed so the bit layout is stable across messages.
+// 4 bits gives 16 groups: 32 chars in 2-wide mode, 48 chars in 3-wide mode.
+const TEXT30_GROUP_INDEX_BITS = 4;
+const TEXT30_ALPHABET = [
+  ' ', 'a', 'b', 'c', 'd', 'e', 'f', 'g',
+  'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
+  'p', 'q', 'r', 's', 't', 'u', 'v', 'w',
+  'x', 'y', 'z', '.', ',', '?', '!', "'"
+];
+const TEXT30_PASS_LABELS = {
+  0: 'word shape / rails',
+  1: 'high-value consonants',
+  2: 'remaining groups',
+  3: 'punctuation / fallback'
+};
 const TX_STATES = {
   IDLE: 'txIdle',
   TONE: 'txPlayingTone',
@@ -505,10 +553,7 @@ const els = {
   symbolOut: document.getElementById('symbolOut'),
   playTone: document.getElementById('playTone'),
   playSweep: document.getElementById('playSweep'),
-  playPattern: document.getElementById('playPattern'),
-  syncTx: document.getElementById('syncTx'),
   listen: document.getElementById('listen'),
-  syncRx: document.getElementById('syncRx'),
   liveBtn: document.getElementById('liveBtn'),
   traceGain: document.getElementById('traceGain'),
   status: document.getElementById('status'),
@@ -517,31 +562,41 @@ const els = {
   activityBars: document.getElementById('activityBars'),
   resetActivity: document.getElementById('resetActivity'),
   activityMode: document.getElementById('activityMode'),
-  packetMark: document.getElementById('packetMark'),
-  packetSpace: document.getElementById('packetSpace'),
   packetMarkerFreq: document.getElementById('packetMarkerFreq'),
   packetMarkerDuration: document.getElementById('packetMarkerDuration'),
-  packetMarkerMode: document.getElementById('packetMarkerMode'),
-  packetSymbol: document.getElementById('packetSymbol'),
-  packetFrameMode: document.getElementById('packetFrameMode'),
-  packetText: document.getElementById('packetText'),
-  packetInterval: document.getElementById('packetInterval'),
-  sendPacket: document.getElementById('sendPacket'),
-  startPacketLoop: document.getElementById('startPacketLoop'),
-  stopPacketLoop: document.getElementById('stopPacketLoop'),
-  packetRx: document.getElementById('packetRx'),
-  packetSelfTest: document.getElementById('packetSelfTest'),
-  packetExportLogs: document.getElementById('packetExportLogs'),
-  packetCopyJson: document.getElementById('packetCopyJson'),
-  packetExportJson: document.getElementById('packetExportJson'),
-  packetExportStatus: document.getElementById('packetExportStatus'),
   closedPanels: document.getElementById('closedPanels'),
-  packetLiveStatus: document.getElementById('packetLiveStatus'),
-  assembledMessage: document.getElementById('assembledMessage'),
-  assemblyStatus: document.getElementById('assemblyStatus'),
-  packetOut: document.getElementById('packetOut'),
-  results: document.getElementById('results'),
-  recommendation: document.getElementById('recommendation'),
+  textPainterText: document.getElementById('textPainterText'),
+  textPainterSymbol: document.getElementById('textPainterSymbol'),
+  textPainterBurstCap: document.getElementById('textPainterBurstCap'),
+  textPainterPlan: document.getElementById('textPainterPlan'),
+  textPainterNext: document.getElementById('textPainterNext'),
+  textPainterOnePass: document.getElementById('textPainterOnePass'),
+  textPainterThreePasses: document.getElementById('textPainterThreePasses'),
+  textPainterReset: document.getElementById('textPainterReset'),
+  textPainterPlay: document.getElementById('textPainterPlay'),
+  textPainterSendOnce: document.getElementById('textPainterSendOnce'),
+  textPainterRx: document.getElementById('textPainterRx'),
+  textPainterCharCount: document.getElementById('textPainterCharCount'),
+  textPainterBatchCount: document.getElementById('textPainterBatchCount'),
+  textPainterFrameCount: document.getElementById('textPainterFrameCount'),
+  textPainterQuadCount: document.getElementById('textPainterQuadCount'),
+  textPainterLargestBurst: document.getElementById('textPainterLargestBurst'),
+  textPainterReadablePass: document.getElementById('textPainterReadablePass'),
+  textPainterSignalMark: document.getElementById('textPainterSignalMark'),
+  textPainterSignalMarkVal: document.getElementById('textPainterSignalMarkVal'),
+  textPainterSignalD0: document.getElementById('textPainterSignalD0'),
+  textPainterSignalD0Val: document.getElementById('textPainterSignalD0Val'),
+  textPainterSignalD1: document.getElementById('textPainterSignalD1'),
+  textPainterSignalD1Val: document.getElementById('textPainterSignalD1Val'),
+  textPainterSignalD2: document.getElementById('textPainterSignalD2'),
+  textPainterSignalD2Val: document.getElementById('textPainterSignalD2Val'),
+  textPainterSignalD3: document.getElementById('textPainterSignalD3'),
+  textPainterSignalD3Val: document.getElementById('textPainterSignalD3Val'),
+  toneSignalStrip: document.querySelector('.tone-signal-strip'),
+  textPainterAssembled: document.getElementById('textPainterAssembled'),
+  textPainterAssemblyStatus: document.getElementById('textPainterAssemblyStatus'),
+  textPainterLiveStatus: document.getElementById('textPainterLiveStatus'),
+  textPainterPlanOut: document.getElementById('textPainterPlanOut'),
   log: document.getElementById('log')
 };
 let audioCtx;
@@ -563,11 +618,6 @@ let txState = TX_STATES.IDLE;
 let txGeneration = 0;
 let txActiveNodes = [];
 let txTimeouts = new Map();
-let syncRxActive = false;
-let syncRxState = 'idle';
-let syncArmTime = 0;
-let syncStartTime = 0;
-let syncResults = [];
 let lastDetectionMeta = null;
 let packetLoopTimer = null;
 let packetLoopActive = false;
@@ -588,7 +638,24 @@ let packetRxProgressLast = 0;
 let packetLastMarkerStart = 0;
 let packetBadSeq0SweepDone = false;
 let microframeMessageId = Math.floor(Math.random() * 256);
+function makeEmptyMicroframeRxState() { return { slots: [], frames: new Map(), startedAt: 0 }; }
 let microframeRx = makeEmptyMicroframeRxState();
+let textPainterPlan = null;
+let textPainterRx = null;
+let textPainterFrameCursor = 0;
+let textPainterRxActive = false;
+let textPainterRxState = 'idle';
+let textPainterSeenUntil = 0;
+let textPainterRxArmTime = 0;
+let textPainterRxProgressLast = 0;
+let textPainterLastMarkerStart = 0;
+let textPainterLiveStats = makeEmptyTextPainterLiveStats();
+let textPainterTxCarouselActive = false;
+let textPainterTxSession = 0;
+let textPainterTxPass = 0;
+let textPainterRxBlindMode = false;
+let textPainterMetersEnabled = true;
+let textPainterRxStartedMic = false;
 
 function getSelectedSymbolMs() {
   return Number(els.symbolLength.value);
@@ -598,48 +665,6 @@ function rateLabel(ms) {
   return `${(1000 / ms).toFixed(ms >= 200 ? 1 : 1)} sym/s`;
 }
 
-function getSyncSequence() {
-  const selected = getSelectedSymbolMs();
-  return [
-    ...TONES.map(freq => ({ category: 'carrier', name: `${freq / 1000} kHz carrier`, tones: [freq], duration: 500, gap: SYNC_GAP_MS })),
-    ...[500, 300, 200, 120, 80].map(ms => ({
-      category: 'timing',
-      symbolMs: ms,
-      name: `16/18 kHz alternating, ${ms} ms`,
-      tones: [16000, 18000, 16000, 18000, 16000, 18000],
-      duration: ms,
-      gap: SYNC_GAP_MS
-    })),
-    {
-      category: 'pattern',
-      symbolMs: selected,
-      name: `Known bit pattern 10101010, ${selected} ms`,
-      tones: [18000, 16000, 18000, 16000, 18000, 16000, 18000, 16000],
-      duration: selected,
-      gap: SYNC_GAP_MS
-    }
-  ];
-}
-
-function getSyncTxSequence() {
-  const warmup = {
-    category: 'warmup',
-    name: 'unscored 1s receiver warmup carrier',
-    tones: [16000],
-    duration: 1000,
-    gap: 0,
-    afterGap: SYNC_GAP_MS
-  };
-  const preamble = {
-    category: 'preamble',
-    name: 'sync preamble 101010101010',
-    tones: SYNC_PREAMBLE_BITS.map(bit => bit ? 18000 : 16000),
-    duration: SYNC_PREAMBLE_SYMBOL_MS,
-    gap: 0,
-    afterGap: SYNC_GAP_MS
-  };
-  return [warmup, preamble, ...getSyncSequence()];
-}
 
 function ensureAudioContext() {
   const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
@@ -686,17 +711,15 @@ function buildControls() {
   }
   setSelectedTone(selectedTone);
 
-  for (const freq of TONES) {
-    for (const select of [els.packetMark, els.packetSpace, els.packetMarkerFreq]) {
+  if (els.packetMarkerFreq) {
+    for (const freq of TONES) {
       const option = document.createElement('option');
       option.value = String(freq);
       option.textContent = `${freq / 1000} kHz`;
-      select.append(option);
+      els.packetMarkerFreq.append(option);
     }
+    els.packetMarkerFreq.value = String(PACKET_MARKER_DEFAULT_FREQ);
   }
-  els.packetMark.value = '18000';
-  els.packetSpace.value = '16000';
-  els.packetMarkerFreq.value = String(PACKET_MARKER_DEFAULT_FREQ);
 
   for (const freq of BIN_FREQS) {
     const bin = document.createElement('div');
@@ -744,7 +767,6 @@ function updateSliderLabels() {
   els.durationOut.textContent = `${els.duration.value} ms`;
   els.volumeOut.textContent = `${Math.round(Number(els.volume.value) * 100)}%`;
   els.symbolOut.textContent = `${SYMBOL_PRESETS[symbolMs]} — ${symbolMs} ms (${rateLabel(symbolMs)})`;
-  if (!syncRxActive) renderResults();
 }
 
 function setTxState(state, label = state) {
@@ -754,12 +776,7 @@ function setTxState(state, label = state) {
 
 
 function updatePacketControlLabels() {
-  els.startPacketLoop.textContent = packetLoopActive ? 'Carousel Running' : 'Start Carousel';
-  els.startPacketLoop.title = packetLoopActive ? `TX carousel running; pass index ${packetLoopIndex}` : 'TX carousel stopped; next start begins at seq 0';
-  els.stopPacketLoop.textContent = 'Stop Loop';
-  els.stopPacketLoop.title = 'Stop TX and reset the carousel sequence to seq 0';
-  els.packetRx.textContent = packetRxActive ? 'Receive Mode On' : 'Receive Mode';
-  els.packetRx.title = packetRxActive ? `Microframe RX parser ${packetRxState}` : 'Start receive mode with a fresh microframe assembly';
+  // Legacy microframe UI retired in this keeper build.
 }
 
 function clearPacketLoopTimer() {
@@ -1082,8 +1099,8 @@ function appendSample(timestamp, frequency, strength, meta = null) {
   traceBuffer.push({ timestamp, frequency, strength, mode: modeLabel, meta });
   const cutoff = timestamp - HISTORY_MS;
   while (traceBuffer.length && traceBuffer[0].timestamp < cutoff) traceBuffer.shift();
-  if (syncRxActive) scoreSync(timestamp);
   if (packetRxActive) scanPackets(timestamp);
+  if (textPainterRxActive) scanTextPainterRx(timestamp);
 }
 
 function yForFrequency(freq, plot) {
@@ -1175,323 +1192,20 @@ function updateActivityBars() {
 
 function updateStatus() {
   const listenText = isListening ? 'listening' : 'not listening';
-  const syncText = syncRxActive || syncRxState !== 'idle' ? ` | RX ${syncRxState}` : '';
+  const syncText = '';
   els.status.textContent = `Status: ${listenText}${syncText} | peak ${formatFreq(currentPeak)} | strength ${Math.round(currentStrength * 100)}% | TX ${txState} | ${modeLabel}`;
-}
-
-function syncPlanWithStates() {
-  const plan = getSyncSequence();
-  return plan.map((step, index) => syncResults[index] || {
-    name: step.name,
-    category: step.category,
-    symbolMs: step.symbolMs,
-    tones: step.tones,
-    duration: step.duration,
-    gap: step.gap,
-    afterGap: step.afterGap,
-    status: syncRxActive ? 'WAITING' : '—',
-    score: 0,
-    freq: step.tones[0]
-  });
-}
-
-function renderResults() {
-  els.results.innerHTML = '';
-  const rows = syncPlanWithStates();
-  rows.forEach((result, index) => {
-    const row = document.createElement('div');
-    row.className = 'result-row';
-    const statusClass = result.status === '—' ? 'waiting' : result.status.toLowerCase();
-    row.innerHTML = `<span>Test ${String(index + 1).padStart(2, '0')}</span><span class="result-main"><strong>${result.name}</strong><span class="result-detail">${result.detail || describePendingResult(result)}</span></span><span class="pill ${statusClass}">${result.status}</span>`;
-    els.results.append(row);
-  });
-  updateRecommendation(rows);
-}
-
-function updateRecommendation(rows) {
-  const completed = rows.filter(r => ['PASS', 'WEAK', 'FAIL'].includes(r.status));
-  if (!completed.length) {
-    els.recommendation.textContent = 'Recommended profile: waiting for sync data.';
-    return;
-  }
-  const carriers = completed.filter(r => r.category === 'carrier' && r.status === 'PASS').sort((a, b) => b.score - a.score);
-  const timing = completed.filter(r => r.category === 'timing' && r.status === 'PASS').sort((a, b) => a.symbolMs - b.symbolMs);
-  const usableCount = completed.filter(r => ['PASS', 'WEAK'].includes(r.status)).length;
-  if (carriers.length < 2 || usableCount < 4 || !timing.length) {
-    els.recommendation.textContent = 'Recommended profile: none yet — try lower frequency range, higher volume, slower timing, or different device placement.';
-    return;
-  }
-  const mark = carriers[0].freq;
-  const space = carriers.find(r => Math.abs(r.freq - mark) >= 1000)?.freq || carriers[1].freq;
-  const fastest = timing[0].symbolMs;
-  const confidence = Math.round((completed.reduce((sum, r) => sum + r.score, 0) / completed.length) * 100);
-  els.recommendation.textContent = `Recommended profile: mark ${formatFreq(mark)}, space ${formatFreq(space)}, fastest reliable symbol ${fastest} ms (${rateLabel(fastest)}), confidence ${confidence}%`;
 }
 
 function percent(value) {
   return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
 }
 
-function describeExpected(step) {
-  if (step.tones.length === 1) return `Expected: ${formatFreq(step.tones[0])} for ${step.duration} ms`;
-  const unique = [...new Set(step.tones)].map(formatFreq).join('/');
-  return `Expected symbols: ${step.tones.length} at ${step.duration} ms (${unique})`;
-}
-
-function describePendingResult(result) {
-  return `${describeExpected(result)}
-Verdict: ${result.status}
-Reason: ${syncRxState === 'waiting for sync' ? 'RX is listening for the alternating sync preamble.' : 'No evidence scored yet.'}`;
-}
-
-function symbolGuardMs(symbolMs) {
-  // The old 50 ms hard floor worked at 200 ms symbols, but at 120 ms it
-  // left only ~20 ms of usable center. Keep the guard proportional once
-  // symbols get short so the detector still has more than one 50 ms tick
-  // inside the stable part of the symbol.
-  const softFloor = Math.min(EDGE_IGNORE_MS, symbolMs * 0.18);
-  return Math.min(Math.max(softFloor, symbolMs * SYMBOL_GUARD_FRACTION), symbolMs * 0.42);
-}
-
-function scoreWindow(expectedFreq, start, end) {
-  const guard = symbolGuardMs(end - start);
-  const stableStart = start + guard;
-  const stableEnd = end - guard;
-  const expectedWindows = Math.max(1, Math.round((stableEnd - stableStart) / DETECT_INTERVAL_MS));
-  const samples = traceBuffer.filter(s => s.timestamp >= stableStart && s.timestamp <= stableEnd);
-  const signalSamples = samples.filter(s => s.frequency);
-  const hits = signalSamples.filter(s => Math.abs(s.frequency - expectedFreq) <= 700);
-  const targetStrengths = samples.map(s => Math.min(1, ((s.meta?.energyMap?.[expectedFreq]) || 0) / STRONG_ENERGY));
-  const targetAvg = targetStrengths.reduce((sum, value) => sum + value, 0) / Math.max(1, targetStrengths.length);
-  const targetPeak = Math.max(0, ...targetStrengths);
-  const noise = samples.reduce((sum, s) => sum + Math.min(1, ((s.meta?.noiseFloor) || 0) / STRONG_ENERGY), 0) / Math.max(1, samples.length);
-  const seenWindows = hits.length;
-  const seenRatio = seenWindows / expectedWindows;
-  const hitStrength = hits.reduce((sum, s) => sum + s.strength, 0) / Math.max(1, hits.length);
-  const score = Math.min(1, (seenRatio * 0.55) + (targetAvg * 0.25) + (hitStrength * 0.20));
-  const peakDetected = signalSamples.sort((a, b) => b.strength - a.strength)[0]?.frequency || null;
-  const firstHit = hits[0]?.timestamp;
-  const center = (stableStart + stableEnd) / 2;
-  const expectedCenter = (start + end) / 2;
-  let alignment = 'not seen';
-  if (firstHit !== undefined) {
-    const offset = center - expectedCenter;
-    alignment = Math.abs(offset) <= DETECT_INTERVAL_MS ? 'aligned' : offset < 0 ? `early by ${Math.round(Math.abs(offset))} ms` : `late by ${Math.round(offset)} ms`;
-  }
-  return { expectedFreq, score, peakDetected, targetAvg, targetPeak, noise, ratio: targetAvg / Math.max(0.01, noise), seenWindows, expectedWindows, seenRatio, alignment };
-}
-
-function summarizeStep(step, cursor) {
-  const toneSpan = step.duration + (step.gap ?? SYNC_GAP_MS);
-  const windows = step.tones.map((tone, index) => scoreWindow(tone, cursor + index * toneSpan, cursor + index * toneSpan + step.duration));
-  const score = windows.reduce((sum, w) => sum + w.score, 0) / Math.max(1, windows.length);
-  const matched = windows.filter(w => w.score > 0.22).length;
-  const lowConfidence = windows.map((w, index) => w.score > 0.12 && w.score <= 0.35 ? index + 1 : null).filter(Boolean);
-  const bestWindow = windows.slice().sort((a, b) => b.targetPeak - a.targetPeak)[0] || windows[0];
-  const status = score > 0.52 ? 'PASS' : score > 0.22 ? 'WEAK' : 'FAIL';
-  const reason = status === 'PASS'
-    ? 'target evidence met the current PASS threshold'
-    : status === 'WEAK'
-      ? 'target was detected, but below current PASS threshold'
-      : matched
-        ? 'timing match failed, but one or more expected tones were detected'
-        : 'expected target was not detected above the noise floor';
-  const detail = `${describeExpected(step)}
-Peak detected: ${formatFreq(bestWindow.peakDetected)}
-Target band avg: ${percent(windows.reduce((sum, w) => sum + w.targetAvg, 0) / windows.length)}
-Target band peak: ${percent(bestWindow.targetPeak)}
-Seen windows: ${windows.reduce((sum, w) => sum + w.seenWindows, 0)} / ${windows.reduce((sum, w) => sum + w.expectedWindows, 0)} (${percent(windows.reduce((sum, w) => sum + w.seenRatio, 0) / windows.length)})
-Noise floor: ${percent(windows.reduce((sum, w) => sum + w.noise, 0) / windows.length)}
-Target/noise ratio: ${(windows.reduce((sum, w) => sum + w.ratio, 0) / windows.length).toFixed(1)}x
-Alignment: ${windows.map(w => w.alignment).filter((value, index, arr) => arr.indexOf(value) === index).join(', ')}
-Matched symbols: ${matched} / ${windows.length}${lowConfidence.length ? `
-Low-confidence symbols: ${lowConfidence.join(', ')}` : ''}
-Verdict: ${status}
-Reason: ${reason}`;
-  return { ...step, status, score, freq: step.tones[0], detail, matched, lowConfidence };
-}
-
-function findSyncPreamble(now) {
-  const lookback = traceBuffer.filter(s => s.timestamp >= now - 3500 && s.frequency);
-  if (lookback.length < 6) return null;
-  const symbols = [];
-  for (let start = lookback[0].timestamp; start <= now - SYNC_PREAMBLE_SYMBOL_MS; start += SYNC_PREAMBLE_SYMBOL_MS / 2) {
-    const end = start + SYNC_PREAMBLE_SYMBOL_MS;
-    const samples = lookback.filter(s => s.timestamp >= start && s.timestamp < end);
-    if (!samples.length) continue;
-    const avg16 = samples.reduce((sum, s) => sum + Math.min(1, ((s.meta?.energyMap?.[16000]) || 0) / STRONG_ENERGY), 0) / samples.length;
-    const avg18 = samples.reduce((sum, s) => sum + Math.min(1, ((s.meta?.energyMap?.[18000]) || 0) / STRONG_ENERGY), 0) / samples.length;
-    const bit = avg18 > avg16 ? 1 : 0;
-    const confidence = Math.abs(avg18 - avg16);
-    if (confidence > 0.08 && Math.max(avg16, avg18) > 0.12) symbols.push({ bit, start, end, confidence });
-  }
-  for (let i = 0; i <= symbols.length - SYNC_PREAMBLE_BITS.length; i++) {
-    const slice = symbols.slice(i, i + SYNC_PREAMBLE_BITS.length);
-    const matches = slice.filter((symbol, index) => symbol.bit === SYNC_PREAMBLE_BITS[index]).length;
-    if (matches >= 6) return slice.at(-1).end;
-  }
-  return null;
-}
-
-function scoreSync(now) {
-  const sequence = getSyncSequence();
-  if (syncRxState === 'waiting for sync') {
-    const detectedAt = findSyncPreamble(now);
-    if (detectedAt) {
-      syncStartTime = detectedAt + SYNC_GAP_MS;
-      syncRxState = 'sync detected';
-      modeLabel = 'sync detected';
-      log('OK', 'sync preamble detected; scoring will start automatically');
-    } else if (now - syncArmTime > 20000) {
-      syncRxActive = false;
-      syncRxState = 'no sync found';
-      modeLabel = 'no sync found';
-      renderResults();
-      log('WARN', 'no sync preamble found after 20 seconds');
-    }
-    return;
-  }
-  let cursor = syncStartTime;
-  const scored = [];
-  for (const [index, step] of sequence.entries()) {
-    const toneSpan = step.duration + (step.gap ?? SYNC_GAP_MS);
-    const stepEnd = cursor + toneSpan * step.tones.length + (step.afterGap ?? SYNC_GAP_MS);
-    if (now < stepEnd) {
-      syncRxState = `running test ${String(index + 1).padStart(2, '0')} / ${sequence.length}`;
-      modeLabel = syncRxState;
-      scored.push({ ...step, status: 'RUNNING', score: 0, freq: step.tones[0], detail: `${describeExpected(step)}
-Verdict: RUNNING
-Reason: collecting windows for this test.` });
-      break;
-    }
-    scored.push(summarizeStep(step, cursor));
-    cursor = stepEnd;
-  }
-  const changed = JSON.stringify(scored.map(r => [r.name, r.status, Math.round(r.score * 100), r.detail])) !== JSON.stringify(syncResults.map(r => [r.name, r.status, Math.round(r.score * 100), r.detail]));
-  if (changed) {
-    syncResults = scored;
-    renderResults();
-  }
-  if (syncResults.length === sequence.length && syncResults.every(r => ['PASS', 'WEAK', 'FAIL'].includes(r.status))) {
-    syncRxActive = false;
-    syncRxState = 'sync complete';
-    modeLabel = 'sync complete';
-    log('OK', 'sync sequence scored');
-  }
-}
-
-function textToBytes(text) {
-  return Array.from(new TextEncoder().encode(text)).slice(0, 255);
-}
-
-function byteToBits(byte) {
-  return Array.from({ length: 8 }, (_, index) => (byte >> (7 - index)) & 1);
-}
-
-function bitsToByte(bits) {
-  return bits.reduce((value, bit) => (value << 1) | (bit ? 1 : 0), 0);
-}
-
-function byteToQuadSymbols(byte) {
-  return [
-    (byte >> 6) & 0x03,
-    (byte >> 4) & 0x03,
-    (byte >> 2) & 0x03,
-    byte & 0x03
-  ];
-}
-
-function bytesToQuadSymbols(bytes) {
-  return bytes.flatMap(byteToQuadSymbols);
-}
-
-function quadSymbolsToByte(symbols) {
-  return symbols.reduce((value, symbol) => (value << 2) | (symbol & 0x03), 0);
-}
-
-function bodySymbolsForBytes(bytes) {
-  return PACKET_BODY_MODE === 'quad' ? bytesToQuadSymbols(bytes) : bytes.flatMap(byteToBits);
-}
-
-function bodyTonesForBytes(bytes, mark, space) {
-  if (PACKET_BODY_MODE === 'quad') return bodySymbolsForBytes(bytes).map(symbol => PACKET_QUAD_FREQS[symbol]);
-  return bodySymbolsForBytes(bytes).map(bit => bit ? mark : space);
-}
-
+// Legacy byte-packet / alternating-preamble / META code retired here.
+// Keeper path below is the flat-5 text painter.  These tiny helpers remain
+// because the painter still reports old-vs-new tone estimates and shares the
+// marker-tone controls.
 function bodySymbolCountForBytes(byteCount) {
-  return PACKET_BODY_MODE === 'quad' ? byteCount * 4 : byteCount * 8;
-}
-
-
-function getPacketFrameMode() {
-  return els.packetFrameMode?.value || 'fast';
-}
-
-function crc16Ccitt(bytes) {
-  let crc = 0xffff;
-  for (const byte of bytes) {
-    crc ^= byte << 8;
-    for (let bit = 0; bit < 8; bit++) crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) & 0xffff : (crc << 1) & 0xffff;
-  }
-  return crc & 0xffff;
-}
-
-function makeEmptyMicroframeRxState() {
-  return {
-    slots: new Map(),
-    meta: null,
-    finalCrcOk: false,
-    finalCrcChecked: false,
-    lastAssembledText: '',
-    lastStateLine: 'No observations yet. CRC pending.'
-  };
-}
-
-function resetMicroframeAssembly() {
-  microframeRx = makeEmptyMicroframeRxState();
-  renderMicroframeAssembly();
-}
-
-function buildMicroframePlan(text = els.packetText.value || 'HELLO WORLD') {
-  const rawPayload = textToBytes(text).filter(byte => byte !== PACKET_TERMINATOR_BYTE);
-  const payload = [...rawPayload, PACKET_TERMINATOR_BYTE];
-  const totalSlots = Math.max(1, Math.ceil(payload.length / MICROFRAME_BYTES_PER_SLOT));
-  const slots = [];
-  for (let seq = 0; seq < totalSlots; seq++) {
-    const offset = seq * MICROFRAME_BYTES_PER_SLOT;
-    slots.push({ seq, bytes: [payload[offset] ?? PACKET_TERMINATOR_BYTE, payload[offset + 1] ?? PACKET_TERMINATOR_BYTE] });
-  }
-  const crc = crc16Ccitt(payload);
-  return { payload, totalSlots, slots, crc, messageId: microframeMessageId };
-}
-
-function frameBytesWithOptionalCheck(bytes, mode = getPacketFrameMode()) {
-  if (mode !== 'checked') return bytes;
-  const check = bytes.slice(1).reduce((value, byte) => value ^ byte, 0) & 0xff;
-  return [...bytes, check];
-}
-
-function buildMicroframeBytes(frame, mode = getPacketFrameMode()) {
-  if (frame.type === 'meta') {
-    const bytes = [MICROFRAME_META_SYNC, frame.messageId, frame.length & 0xff, frame.totalSlots & 0xff, frame.crc & 0xff, (frame.crc >> 8) & 0xff];
-    return frameBytesWithOptionalCheck(bytes, mode);
-  }
-  return frameBytesWithOptionalCheck([MICROFRAME_DATA_SYNC, frame.seq & 0xff, frame.bytes[0] & 0xff, frame.bytes[1] & 0xff], mode);
-}
-
-function buildMicroframeCarouselFrames(text = els.packetText.value || 'HELLO WORLD') {
-  const plan = buildMicroframePlan(text);
-  const dataFrames = plan.slots.map(slot => ({ type: 'data', seq: slot.seq, bytes: slot.bytes }));
-  const metaFrame = { type: 'meta', messageId: plan.messageId, length: plan.payload.length, totalSlots: plan.totalSlots, crc: plan.crc };
-  return { ...plan, frames: PACKET_SEND_META ? [...dataFrames, metaFrame] : dataFrames };
-}
-
-function buildMicroframeBitsForFrame(frame, mode = getPacketFrameMode()) {
-  return [...PACKET_PREAMBLE_BITS, ...buildMicroframeBytes(frame, mode).flatMap(byteToBits)];
-}
-
-function getPacketMarkerMode() {
-  return els.packetMarkerMode?.value || 'tone';
+  return byteCount * 4; // old 4-FSK body: one byte = four 2-bit data tones
 }
 
 function getPacketMarkerFreq() {
@@ -1502,836 +1216,579 @@ function getPacketMarkerDurationMs() {
   return Number(els.packetMarkerDuration?.value || 280);
 }
 
-function toneDelimitedBytesWithOptionalCheck(bytes, mode = getPacketFrameMode()) {
-  if (mode !== 'checked') return bytes;
-  const check = bytes.reduce((value, byte) => value ^ byte, 0) & 0xff;
-  return [...bytes, check];
+function average(values) {
+  if (!values || !values.length) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
-function buildToneDelimitedFrameBodyBytes(frame, mode = getPacketFrameMode()) {
-  if (frame.type === 'meta') {
-    const bytes = [frame.messageId & 0xff, frame.length & 0xff, frame.totalSlots & 0xff, frame.crc & 0xff, (frame.crc >> 8) & 0xff];
-    return toneDelimitedBytesWithOptionalCheck(bytes, mode);
+function makeText30CodeMap(table) {
+  return new Map(table.map((symbol, code) => [symbol, { code, symbol }]));
+}
+
+const TEXT30_ROOT_CODES = makeText30CodeMap(TEXT30_ALPHABET);
+
+function text30BitsNeeded(count) {
+  return Math.max(1, Math.ceil(Math.log2(Math.max(1, count))));
+}
+
+function text30CleanInput(text) {
+  return String(text || '').replace(/\s+/g, ' ').toLowerCase().slice(0, 64);
+}
+
+function text30IsLetter(ch) {
+  return /^[a-z]$/i.test(ch);
+}
+
+function text30IsVowel(ch) {
+  return 'aeiou'.includes(ch.toLowerCase());
+}
+
+function text30FrameWidth() {
+  const value = Number(els.textPainterBurstCap?.value || 2);
+  return value === 3 ? 3 : 2;
+}
+
+function text30GroupIndexBits() {
+  return TEXT30_GROUP_INDEX_BITS;
+}
+
+function text30MaxGroupsForIndexBits(indexBits = text30GroupIndexBits()) {
+  return 1 << indexBits;
+}
+
+function text30MaxCharsForWidth(width = text30FrameWidth(), indexBits = text30GroupIndexBits()) {
+  return text30MaxGroupsForIndexBits(indexBits) * width;
+}
+
+function text30WordBounds(text, index) {
+  const current = text[index] || '';
+  if (!text30IsLetter(current)) return { first: false, last: false };
+  const prev = text[index - 1] || ' ';
+  const next = text[index + 1] || ' ';
+  return { first: !text30IsLetter(prev), last: !text30IsLetter(next) };
+}
+
+function text30ReadabilityPriority(text, index, ch) {
+  if (ch === ' ') return 0;
+  const lower = ch.toLowerCase();
+  if (!text30IsLetter(ch)) return 74;
+  const bounds = text30WordBounds(text, index);
+  let score = 36;
+  if (!text30IsVowel(lower)) score -= 13;
+  else score += 8;
+  if (bounds.first) score -= 12;
+  if (bounds.last) score -= 8;
+  if ('qzxjkvw'.includes(lower)) score -= 4;
+  return Math.max(1, score);
+}
+
+function text30PassForPriority(priority, ch) {
+  if (ch === ' ') return 0;
+  if (!text30IsLetter(ch)) return 3;
+  if (priority <= 12) return 0;
+  if (priority <= 24) return 1;
+  return 2;
+}
+
+function text30EncodeChar(ch) {
+  const clean = TEXT30_ROOT_CODES.has(ch) ? ch : '?';
+  return TEXT30_ROOT_CODES.get(clean) || TEXT30_ROOT_CODES.get('?');
+}
+
+function text30MakeSlot(text, position) {
+  const inRange = position >= 0 && position < text.length;
+  const symbol = inRange ? text[position] : ' ';
+  const mapped = text30EncodeChar(symbol);
+  const priority = inRange ? text30ReadabilityPriority(text, position, mapped.symbol) : 999;
+  return {
+    symbol: mapped.symbol,
+    code: mapped.code,
+    position,
+    priority,
+    pass: inRange ? text30PassForPriority(priority, mapped.symbol) : 9,
+    kind: inRange ? 'char' : 'pad'
+  };
+}
+
+function text30BuildFrame(groupIndex, indexBits, width, text, frameIndex = 0) {
+  const entries = [];
+  for (let side = 0; side < width; side++) entries.push(text30MakeSlot(text, groupIndex * width + side));
+  const realEntries = entries.filter(entry => entry.kind !== 'pad');
+  const pass = realEntries.length ? Math.min(...realEntries.map(entry => entry.pass)) : 9;
+  const priority = realEntries.length ? Math.min(...realEntries.map(entry => entry.priority)) : 999;
+  const bodyBits = indexBits + width * 5;
+  const dataTones = Math.ceil(bodyBits / 2);
+  return {
+    pass,
+    priority,
+    groupIndex,
+    pairIndex: groupIndex,
+    groupWidth: width,
+    markerCount: 1,
+    entries,
+    left: entries[0],
+    right: entries[1] || null,
+    indexBits,
+    pairBits: indexBits,
+    positionBits: indexBits,
+    bodyBits,
+    dataTones,
+    bodyQuads: dataTones,
+    frameIndex,
+    batchIndex: pass,
+    burstIndex: frameIndex
+  };
+}
+
+function text30PlanMessage(rawText = els.textPainterText?.value || '') {
+  const width = text30FrameWidth();
+  const indexBits = text30GroupIndexBits();
+  const maxChars = text30MaxCharsForWidth(width, indexBits);
+  const text = text30CleanInput(rawText).slice(0, maxChars);
+  const hasExpectedText = text.length > 0;
+  const groupCount = hasExpectedText ? Math.ceil(text.length / width) : 1;
+  const frames = [];
+  for (let groupIndex = 0; groupIndex < groupCount; groupIndex++) {
+    frames.push(text30BuildFrame(groupIndex, indexBits, width, text, frames.length));
   }
-  return toneDelimitedBytesWithOptionalCheck([frame.seq & 0xff, frame.bytes[0] & 0xff, frame.bytes[1] & 0xff], mode);
+  frames.sort((a, b) => a.pass - b.pass || a.priority - b.priority || a.groupIndex - b.groupIndex);
+  frames.forEach((frame, index) => {
+    frame.frameIndex = index;
+    frame.burstIndex = index;
+  });
+  const passes = [...new Set(frames.map(frame => frame.pass))].map(pass => ({ pass }));
+  const markerPulses = frames.reduce((sum, frame) => sum + frame.markerCount, 0);
+  const dataTones = frames.reduce((sum, frame) => sum + frame.dataTones, 0);
+  const largestFrameTones = frames.reduce((max, frame) => Math.max(max, frame.dataTones), 0);
+  const firstReadablePass = frames[0]?.pass ?? 0;
+  return {
+    text,
+    frames,
+    batches: passes,
+    groupWidth: width,
+    groupCount,
+    hasExpectedText,
+    maxGroups: text30MaxGroupsForIndexBits(indexBits),
+    maxChars,
+    pairCount: groupCount,
+    indexBits,
+    pairBits: indexBits,
+    positionBits: indexBits,
+    markerPulses,
+    dataTones,
+    bodyQuads: dataTones,
+    largestFrameTones,
+    largestBurstQuads: largestFrameTones,
+    firstReadablePass
+  };
 }
 
-function sanitizeByteForDisplay(byte) {
-  return byte >= 32 && byte <= 126 ? String.fromCharCode(byte) : '?';
+function text30MakeEmptyRx(length) {
+  const safeLength = Math.max(0, Number(length) || 0);
+  return {
+    length: safeLength,
+    slots: Array.from({ length: safeLength }, () => ({ choices: new Map(), firstSeen: 0, lastSeen: 0 })),
+    observations: 0,
+    framesApplied: 0
+  };
 }
 
-function decodeMicroframeBytes(bytes, mode = getPacketFrameMode()) {
-  const checked = mode === 'checked';
-  const minimum = checked ? 5 : 4;
-  if (bytes.length < 1) return { type: 'candidate', finalResult: 'PARTIAL', reason: 'sync/marker byte missing' };
-  const sync = bytes[0];
-  if (sync === MICROFRAME_DATA_SYNC) {
-    if (bytes.length < minimum) return { type: 'data', finalResult: 'PARTIAL', reason: 'data microframe fields still collecting', syncByte: sync };
-    const [seq, byte0, byte1] = bytes.slice(1, 4);
-    const expectedCheck = (seq ^ byte0 ^ byte1) & 0xff;
-    const receivedCheck = checked ? bytes[4] : null;
-    const checkPassed = !checked || receivedCheck === expectedCheck;
-    return { type: 'data', syncByte: sync, seq, dataBytes: [byte0, byte1], expectedCheck, receivedCheck, checkPassed, finalResult: checkPassed ? 'OK' : 'BAD', reason: checkPassed ? 'microframe observation accepted' : 'per-frame check byte failed' };
+function text30EnsureRxSlot(rx, position) {
+  if (!rx || position < 0) return null;
+  while (rx.slots.length <= position) {
+    rx.slots.push({ choices: new Map(), firstSeen: 0, lastSeen: 0 });
   }
-  if (sync === MICROFRAME_META_SYNC) {
-    const needed = checked ? 7 : 6;
-    if (bytes.length < needed) return { type: 'meta', finalResult: 'PARTIAL', reason: 'META/EOF fields still collecting', syncByte: sync };
-    const [messageId, length, totalSlots, crcLo, crcHi] = bytes.slice(1, 6);
-    const crc = crcLo | (crcHi << 8);
-    const expectedCheck = (messageId ^ length ^ totalSlots ^ crcLo ^ crcHi) & 0xff;
-    const receivedCheck = checked ? bytes[6] : null;
-    const checkPassed = !checked || receivedCheck === expectedCheck;
-    return { type: 'meta', syncByte: sync, messageId, length, totalSlots, crc, expectedCheck, receivedCheck, checkPassed, finalResult: checkPassed ? 'OK' : 'BAD', reason: checkPassed ? 'META/EOF accepted' : 'META/EOF check byte failed' };
-  }
-  return { type: 'candidate', syncByte: sync, finalResult: 'BAD', reason: `candidate lock rejected: marker 0x${sync.toString(16).padStart(2, '0')} is not data or META/EOF` };
+  rx.length = rx.slots.length;
+  return rx.slots[position];
 }
 
-function bestObservationForSlot(slot) {
+function text30BestSlot(slot) {
   let best = null;
-  for (const [key, entry] of slot.choices.entries()) {
-    if (!best || entry.count > best.count || (entry.count === best.count && entry.lastSeen > best.lastSeen)) best = { key, ...entry };
+  for (const [char, entry] of slot.choices.entries()) {
+    if (!best || entry.count > best.count || (entry.count === best.count && entry.lastSeen > best.lastSeen)) best = { char, ...entry };
   }
   return best;
 }
 
-function observeMicroframe(decoded, now = performance.now()) {
-  if (decoded.finalResult !== 'OK') return null;
-  if (decoded.type === 'meta') {
-    microframeRx.meta = { messageId: decoded.messageId, length: decoded.length, totalSlots: decoded.totalSlots, crc: decoded.crc, lastSeen: now };
-    updateMicroframeCompletion();
-    renderMicroframeAssembly();
-    return { observation: 'meta' };
+function text30ApplyFrame(frame, rx = textPainterRx) {
+  if (!rx) return;
+  const now = performance.now();
+  for (const entry of frame.entries) {
+    if (!entry || entry.kind === 'pad') continue;
+    if (entry.position < 0) continue;
+    const slot = text30EnsureRxSlot(rx, entry.position);
+    if (!slot) continue;
+    const display = entry.symbol;
+    const choice = slot.choices.get(display) || { count: 0, firstSeen: now, lastSeen: now };
+    choice.count += 1;
+    choice.lastSeen = now;
+    slot.choices.set(display, choice);
+    slot.lastSeen = now;
+    rx.observations += 1;
   }
-  if (decoded.type !== 'data') return null;
-  const knownSlots = microframeRx.meta?.totalSlots ?? null;
-  const slotLimit = knownSlots ?? PACKET_RX_MAX_SLOTS_WITHOUT_META;
-  if (decoded.seq < 0 || decoded.seq >= slotLimit) {
-    const limitLabel = knownSlots === null ? `blind safety limit ${slotLimit}` : `META total slots ${slotLimit}`;
-    return { observation: 'out_of_range_seq', reason: `seq ${decoded.seq} outside ${limitLabel}` };
-  }
-  const key = decoded.dataBytes.join(',');
-  const slot = microframeRx.slots.get(decoded.seq) || { choices: new Map(), firstSeen: now, lastSeen: now };
-  const entry = slot.choices.get(key) || { bytes: decoded.dataBytes, count: 0, firstSeen: now, lastSeen: now };
-  entry.count += 1;
-  entry.lastSeen = now;
-  slot.choices.set(key, entry);
-  slot.lastSeen = now;
-  microframeRx.slots.set(decoded.seq, slot);
-  updateMicroframeCompletion();
-  renderMicroframeAssembly();
-  return { observation: 'slot', count: entry.count };
+  rx.framesApplied += 1;
 }
 
-function assembledBytesFromSlots() {
-  const meta = microframeRx.meta;
-  let totalSlots = 0;
-  let terminatorIndex = null;
-  if (meta) {
-    totalSlots = meta.totalSlots;
-  } else {
-    // Blind mode: only render the contiguous message from seq 0 onward.
-    // Random high seq garbage should not create a screen full of '?' slots.
-    for (let seq = 0; microframeRx.slots.has(seq); seq++) {
-      totalSlots = seq + 1;
-      const best = bestObservationForSlot(microframeRx.slots.get(seq));
-      const localTerm = best.bytes.findIndex(byte => byte === PACKET_TERMINATOR_BYTE);
-      if (localTerm !== -1) {
-        terminatorIndex = seq * MICROFRAME_BYTES_PER_SLOT + localTerm;
-        totalSlots = seq + 1;
-        break;
-      }
-    }
-  }
-  const bytes = [];
-  const missingSlots = [];
-  for (let seq = 0; seq < totalSlots; seq++) {
-    const slot = microframeRx.slots.get(seq);
-    if (!slot) {
-      missingSlots.push(seq);
-      bytes.push(null, null);
-      continue;
-    }
-    const best = bestObservationForSlot(slot);
-    bytes.push(...best.bytes);
-  }
-  const displayBytes = meta ? bytes.slice(0, meta.length) : terminatorIndex !== null ? bytes.slice(0, terminatorIndex) : bytes;
-  return { bytes: displayBytes, rawBytes: bytes, totalSlots, missingSlots, terminatorIndex };
+function text30ResetPaint() {
+  if (!textPainterPlan) textPainterPlan = text30PlanMessage();
+  textPainterRx = text30MakeEmptyRx(textPainterRxBlindMode ? 0 : textPainterPlan.text.length);
+  textPainterFrameCursor = 0;
+  if (textPainterRxActive) resetTextPainterLiveRxState({ resetAssembly: false });
+  renderTextPainterAssembly();
 }
 
-function updateMicroframeCompletion() {
-  const meta = microframeRx.meta;
-  microframeRx.finalCrcOk = false;
-  microframeRx.finalCrcChecked = false;
-  if (!meta) return;
-  const { bytes, missingSlots } = assembledBytesFromSlots();
-  if (missingSlots.length || bytes.some(byte => byte === null) || bytes.length < meta.length) return;
-  const crc = crc16Ccitt(bytes);
-  microframeRx.finalCrcChecked = true;
-  microframeRx.finalCrcOk = crc === meta.crc;
+function text30EnsurePlan() {
+  if (!textPainterPlan) {
+    textPainterPlan = text30PlanMessage();
+    text30ResetPaint();
+    renderTextPainterPlan();
+  }
+  return textPainterPlan;
 }
 
-function renderMicroframeAssembly() {
-  if (!els.assembledMessage) return;
-  const { bytes, totalSlots, missingSlots, terminatorIndex } = assembledBytesFromSlots();
-  els.assembledMessage.innerHTML = '';
-  if (!bytes.length) {
+function text30SimNextFrame() {
+  const plan = text30EnsurePlan();
+  if (!textPainterRx) text30ResetPaint();
+  if (!plan.frames.length) return;
+  const frame = plan.frames[textPainterFrameCursor % plan.frames.length];
+  text30ApplyFrame(frame);
+  textPainterFrameCursor += 1;
+  renderTextPainterAssembly();
+}
+
+function text30SimPass(count = 1) {
+  const plan = text30EnsurePlan();
+  if (!textPainterRx) text30ResetPaint();
+  for (let pass = 0; pass < count; pass++) {
+    for (const frame of plan.frames) text30ApplyFrame(frame);
+    textPainterFrameCursor += plan.frames.length;
+  }
+  renderTextPainterAssembly();
+}
+
+function renderTextPainterAssembly() {
+  if (!els.textPainterAssembled) return;
+  const plan = text30EnsurePlan();
+  const rx = textPainterRx || text30MakeEmptyRx(plan.text.length);
+  els.textPainterAssembled.innerHTML = '';
+  if (!rx.length) {
     const span = document.createElement('span');
     span.className = 'assembled-char missing';
     span.textContent = '?';
-    els.assembledMessage.append(span);
+    els.textPainterAssembled.append(span);
   }
-  bytes.forEach((byte, index) => {
-    const seq = Math.floor(index / MICROFRAME_BYTES_PER_SLOT);
-    const slot = microframeRx.slots.get(seq);
-    const best = slot ? bestObservationForSlot(slot) : null;
-    const className = !slot ? 'missing' : slot.choices.size > 1 ? 'conflict' : best.count >= 4 ? 'strong' : best.count >= 2 ? 'repeat' : 'once';
+  let observed = 0;
+  let verified = 0;
+  let conflicts = 0;
+  rx.slots.forEach((slot, position) => {
+    const best = text30BestSlot(slot);
+    const choices = slot.choices.size;
     const span = document.createElement('span');
-    span.className = `assembled-char ${className}`;
-    span.title = slot ? `seq ${seq}, observations ${best.count}${slot.choices.size > 1 ? ', conflicting values heard' : ''}` : `seq ${seq} missing`;
-    span.textContent = byte === null ? '?' : sanitizeByteForDisplay(byte);
-    els.assembledMessage.append(span);
-  });
-  if (microframeRx.finalCrcOk) {
-    const check = document.createElement('span');
-    check.className = 'crc-ok';
-    check.textContent = '✅';
-    check.title = 'Message complete: all slots present and whole-message CRC matches';
-    els.assembledMessage.append(check);
-  } else if (microframeRx.finalCrcChecked && !microframeRx.finalCrcOk) {
-    const bad = document.createElement('span');
-    bad.className = 'crc-bad';
-    bad.textContent = 'CRC BAD';
-    els.assembledMessage.append(bad);
-  }
-  const meta = microframeRx.meta;
-  const receivedSlots = microframeRx.slots.size;
-  let statusText;
-  if (meta) {
-    const crcText = microframeRx.finalCrcOk ? `Message complete: CRC 0x${meta.crc.toString(16).padStart(4, '0')} matched.` : microframeRx.finalCrcChecked ? `CRC failed against META/EOF 0x${meta.crc.toString(16).padStart(4, '0')}; keep listening for better observations.` : `CRC pending: META/EOF heard, waiting for ${missingSlots.length} missing slot(s).`;
-    statusText = `${receivedSlots} / ${meta.totalSlots} slots observed. ${crcText}`;
-  } else if (terminatorIndex !== null && !missingSlots.length) {
-    statusText = `${receivedSlots} slot(s) observed; NUL terminator accepted at byte ${terminatorIndex}; message complete by quorum/terminator.`;
-  } else if (terminatorIndex !== null) {
-    statusText = `${receivedSlots} slot(s) observed; NUL terminator seen at byte ${terminatorIndex}; waiting for ${missingSlots.length} earlier slot(s).`;
-  } else {
-    statusText = `${receivedSlots} slot(s) observed; waiting for NUL terminator. No META/EOF required in this build.`;
-  }
-  microframeRx.lastAssembledText = bytes.map(byte => byte === null ? '?' : sanitizeByteForDisplay(byte)).join('');
-  microframeRx.lastStateLine = statusText;
-  els.assemblyStatus.textContent = microframeRx.lastStateLine;
-}
-
-function buildPacketBytes(text = els.packetText.value || 'HELLO WORLD') {
-  const payload = textToBytes(text);
-  const checksum = payload.reduce((sum, byte) => (sum + byte) & 0xff, 0);
-  return { payload, checksum, bytes: [PACKET_SYNC_BYTE, payload.length, ...payload, checksum] };
-}
-
-function buildPacketBits(text) {
-  const packet = buildPacketBytes(text);
-  return [...PACKET_PREAMBLE_BITS, ...packet.bytes.flatMap(byteToBits)];
-}
-
-
-function applyBestPacketDefaults() {
-  if (packetFreqTouched) return;
-  const markerFreq = getPacketMarkerFreq();
-  const ranked = [...activity.entries()].filter(([freq, score]) => score > 0 && (getPacketMarkerMode() !== 'tone' || freq !== markerFreq)).sort((a, b) => b[1] - a[1]);
-  if (ranked.length < 2) return;
-  const mark = ranked[0][0];
-  const space = ranked.find(([freq]) => Math.abs(freq - mark) >= 1000)?.[0] || ranked[1][0];
-  if (TONES.includes(mark) && TONES.includes(space)) {
-    els.packetMark.value = String(mark);
-    els.packetSpace.value = String(space);
-  }
-}
-
-async function sendPacketOnce({ fromLoop = false } = {}) {
-  if (!fromLoop) resetPacketLoopState();
-  applyBestPacketDefaults();
-  const mark = Number(els.packetMark.value);
-  const space = Number(els.packetSpace.value);
-  const symbolMs = Number(els.packetSymbol.value);
-  const mode = getPacketFrameMode();
-  const markerMode = getPacketMarkerMode();
-  const markerFreq = getPacketMarkerFreq();
-  const markerDuration = getPacketMarkerDurationMs();
-  const plan = buildMicroframeCarouselFrames();
-  const sequence = [
-    { name: 'microframe carousel warmup silence/space', tones: [space], duration: Math.max(180, symbolMs), gap: 0, afterGap: Math.max(80, symbolMs * 0.5) }
-  ];
-  for (const frame of plan.frames) {
-    const label = frame.type === 'meta' ? `META/EOF length ${plan.payload.length}, slots ${plan.totalSlots}, CRC 0x${plan.crc.toString(16).padStart(4, '0')}` : `microframe seq ${frame.seq}: ${frame.bytes.map(byte => sanitizeByteForDisplay(byte)).join('')}`;
-    if (markerMode === 'tone') {
-      const bodyBytes = buildToneDelimitedFrameBodyBytes(frame, mode);
-      const bodyTones = bodyTonesForBytes(bodyBytes, mark, space);
-      if (frame.type === 'meta') {
-        sequence.push({ name: `first ${formatFreq(markerFreq)} META/EOF marker pulse for ${label}`, tones: [markerFreq], duration: PACKET_META_MARKER_PULSE_MS, gap: 0, afterGap: PACKET_META_MARKER_GAP_MS });
-        sequence.push({ name: `second ${formatFreq(markerFreq)} META/EOF marker pulse for ${label}`, tones: [markerFreq], duration: PACKET_META_MARKER_PULSE_MS, gap: 0, afterGap: PACKET_MARKER_GUARD_MS });
-      } else {
-        sequence.push({ name: `${formatFreq(markerFreq)} marker for ${label}`, tones: [markerFreq], duration: markerDuration, gap: 0, afterGap: PACKET_MARKER_GUARD_MS });
-      }
-      sequence.push({ name: `${PACKET_BODY_MODE === 'quad' ? '4-FSK' : 'binary FSK'} tone-delimited body ${label}`, tones: bodyTones, duration: symbolMs, gap: 0, afterGap: Math.max(40, symbolMs * 0.5) });
+    if (!best) {
+      span.className = 'assembled-char missing';
+      span.textContent = '_';
+      span.title = `pos ${position}: missing`;
     } else {
-      const bits = buildMicroframeBitsForFrame(frame, mode);
-      sequence.push({ name: label, tones: bits.map(bit => bit ? mark : space), duration: symbolMs, gap: 0, afterGap: Math.max(40, symbolMs * 0.5) });
+      observed += 1;
+      if (choices > 1) conflicts += 1;
+      if (best.count >= TEXT30_VERIFY_COUNT) verified += 1;
+      const strong = best.count >= 4 ? 'strong' : best.count >= TEXT30_VERIFY_COUNT ? 'repeat' : 'once';
+      span.className = `assembled-char ${choices > 1 ? 'conflict' : strong}`;
+      span.textContent = best.char;
+      span.title = `pos ${position}: ${best.char}, votes ${best.count}${choices > 1 ? ', conflicting chars heard' : ''}`;
     }
-  }
-  const totalSymbols = plan.frames.reduce((sum, frame) => sum + (markerMode === 'tone' ? bodySymbolCountForBytes(buildToneDelimitedFrameBodyBytes(frame, mode).length) : buildMicroframeBitsForFrame(frame, mode).length), 0);
-  const metaLabel = PACKET_SEND_META ? ' + META/EOF' : ' + NUL terminator, no META/EOF';
-  log('OK', `microframe carousel TX pass: ${plan.totalSlots} data slots${metaLabel}, ${totalSymbols} body symbols, ${PACKET_BODY_MODE === 'quad' ? '4-FSK' : 'binary FSK'}, ${mode} mode, ${markerMode === 'tone' ? `${formatFreq(markerFreq)} tone-delimited markers` : 'legacy alternating preamble'}`);
-  await playSequence(sequence, TX_STATES.PATTERN, 'microframe carousel TX');
+    els.textPainterAssembled.append(span);
+  });
+  els.textPainterAssemblyStatus.textContent = `${observed}/${rx.length} seen · ${verified}/${rx.length} verified · ${conflicts} conflicts`;
+  updateTextPainterDashboard();
 }
 
-async function runPacketLoop() {
-  if (packetLoopActive) return;
-  resetPacketLoopState();
-  packetLoopActive = true;
-  const session = packetLoopSession;
-  updatePacketControlLabels();
-  log('OK', `microframe carousel started; loop gap ${els.packetInterval.value}s from seq 0`);
-  while (packetLoopActive && session === packetLoopSession) {
-    updatePacketControlLabels();
-    await sendPacketOnce({ fromLoop: true });
-    if (!packetLoopActive || session !== packetLoopSession) break;
-    packetLoopIndex += 1;
-    updatePacketControlLabels();
-    await new Promise(resolve => {
-      const done = () => {
-        packetLoopTimer = null;
-        resolve();
-      };
-      packetLoopTimer = {
-        id: setTimeout(done, Math.max(0, Number(els.packetInterval.value)) * 1000),
-        resolve: done
-      };
+function text30FrameEntryLabel(entry) {
+  if (!entry) return 'PAD';
+  if (entry.kind === 'pad') return `PAD@${entry.position}`;
+  return `${entry.position}:${entry.symbol}`;
+}
+
+function text30AssemblyStats(rx = textPainterRx) {
+  const stats = { observed: 0, verified: 0, conflicts: 0, length: rx?.length || 0 };
+  if (!rx) return stats;
+  for (const slot of rx.slots) {
+    const best = text30BestSlot(slot);
+    if (!best) continue;
+    stats.observed += 1;
+    if (slot.choices.size > 1) stats.conflicts += 1;
+    if (best.count >= TEXT30_VERIFY_COUNT) stats.verified += 1;
+  }
+  return stats;
+}
+
+function recentToneStrength(freq, windowMs = 4200) {
+  // Peak-hold meter: show the strongest recent hit, then let it fade slowly.
+  // This is easier to use for device positioning than raw instant energy,
+  // because the tone rails jump too quickly to read while transmitting.
+  if (!traceBuffer.length) return 0;
+  const now = performance.now();
+  const cutoff = now - windowMs;
+  const decayMs = 2300;
+  let best = 0;
+  for (const sample of traceBuffer) {
+    if (sample.timestamp < cutoff) continue;
+    const raw = Math.min(1, ((sample.meta?.energyMap?.[freq]) || 0) / STRONG_ENERGY);
+    if (!raw) continue;
+    const age = Math.max(0, now - sample.timestamp);
+    const faded = raw * Math.exp(-age / decayMs);
+    if (faded > best) best = faded;
+  }
+  return best;
+}
+
+function setSignalMeter(fillEl, valueEl, value) {
+  const pct = Math.round(Math.max(0, Math.min(1, value)) * 100);
+  if (fillEl) fillEl.style.width = `${pct}%`;
+  if (valueEl) valueEl.textContent = `${pct}%`;
+}
+
+function updateTextPainterSignalMeters() {
+  const markerStrength = recentToneStrength(getTextPainterMarkerFreq());
+  if (!textPainterMetersEnabled) {
+    els.toneSignalStrip?.classList.add('meter-off');
+    setSignalMeter(els.textPainterSignalMark, els.textPainterSignalMarkVal, 0);
+    PACKET_QUAD_FREQS.forEach((freq, index) => {
+      setSignalMeter(els[`textPainterSignalD${index}`], els[`textPainterSignalD${index}Val`], 0);
     });
+    return markerStrength;
   }
-  if (session === packetLoopSession) resetPacketLoopState();
+  els.toneSignalStrip?.classList.remove('meter-off');
+  setSignalMeter(els.textPainterSignalMark, els.textPainterSignalMarkVal, markerStrength);
+  PACKET_QUAD_FREQS.forEach((freq, index) => {
+    const value = recentToneStrength(freq);
+    setSignalMeter(els[`textPainterSignalD${index}`], els[`textPainterSignalD${index}Val`], value);
+  });
+  return markerStrength;
 }
 
-function setPacketLiveStatus(text) {
-  els.packetLiveStatus.textContent = text;
+function updateTextPainterDashboard() {
+  const plan = textPainterPlan || text30PlanMessage();
+  const stats = text30AssemblyStats();
+  const markerStrength = updateTextPainterSignalMeters();
+  if (els.textPainterCharCount) els.textPainterCharCount.textContent = textPainterTxCarouselActive ? `pass ${textPainterTxPass}` : 'idle';
+  if (els.textPainterBatchCount) els.textPainterBatchCount.textContent = String(textPainterLiveStats.accepted);
+  if (els.textPainterFrameCount) els.textPainterFrameCount.textContent = `${stats.verified}/${stats.length || plan.text.length}`;
+  if (els.textPainterQuadCount) els.textPainterQuadCount.textContent = String(stats.conflicts);
+  if (els.textPainterLargestBurst) els.textPainterLargestBurst.textContent = percent(markerStrength);
+  if (els.textPainterReadablePass) {
+    els.textPainterReadablePass.textContent = currentPeak ? `${formatFreq(currentPeak)} ${percent(currentStrength)}` : '--';
+  }
 }
 
-function renderPacketLog() {
-  const visibleRecords = packetLog
-    .filter(record => record.session === packetVisibleLogSession);
-  if (!visibleRecords.length) {
-    els.packetOut.textContent = 'No candidate or microframe records for this receive run yet.';
+function renderTextPainterPlan() {
+  if (!els.textPainterPlanOut) return;
+  const plan = textPainterPlan || text30PlanMessage();
+  updateTextPainterDashboard();
+  const oldSlots = Math.ceil(Math.max(1, plan.text.length) / MICROFRAME_BYTES_PER_SLOT);
+  const oldTones = oldSlots * bodySymbolCountForBytes(3);
+  const compactFloor = plan.groupCount * Math.ceil((plan.indexBits + plan.groupWidth * 5) / 2);
+  const twoCount = Math.max(1, Math.ceil(Math.max(1, plan.text.length) / 2));
+  const twoBits = text30BitsNeeded(twoCount);
+  const twoTones = twoCount * Math.ceil((twoBits + 10) / 2);
+  const threeCount = Math.max(1, Math.ceil(Math.max(1, plan.text.length) / 3));
+  const threeBits = text30BitsNeeded(threeCount);
+  const threeTones = threeCount * Math.ceil((threeBits + 15) / 2);
+  const alphabet = TEXT30_ALPHABET.map(v => v === ' ' ? 'SPACE' : v).join(' ');
+  const lines = [
+    `Text: "${plan.text}"`,
+    `Flat 5-bit alphabet: ${alphabet}`,
+    `Frame width: ${plan.groupWidth} adjacent character slot(s). No END/NUL/META; DONE is a transmit/receiver behavior, not a character.`,
+    `Group index bits: ${plan.indexBits} for ${plan.groupCount} group slot(s).`,
+    `Paint frames: ${plan.frames.length}. Each paint frame uses one marker tone, one group index, and ${plan.groupWidth} compact 5-bit character slot(s).`,
+    `Estimate: ${plan.markerPulses} marker tone(s), ${plan.dataTones} data tone(s). Old 3-byte microframe estimate for this text: ${oldTones} data tone(s) before markers.`,
+    `Width comparison for this text: 2-char ${twoCount} frame(s), ${twoTones} data tone(s); 3-char ${threeCount} frame(s), ${threeTones} data tone(s).`,
+    '',
+    ...plan.frames.map((frame, index) => {
+      const labels = frame.entries.map((entry, side) => `${side}:${text30FrameEntryLabel(entry)}`).join('  ');
+      const spanStart = frame.groupIndex * frame.groupWidth;
+      const spanEnd = spanStart + frame.groupWidth - 1;
+      return `${String(index + 1).padStart(2, '0')}. paint frame ${index + 1} | ${TEXT30_PASS_LABELS[frame.pass] || 'padding'} | group ${frame.groupIndex} (${spanStart}-${spanEnd}) | ${frame.dataTones} data tones | ${labels}`;
+    })
+  ];
+  els.textPainterPlanOut.textContent = lines.join('\n');
+}
+
+function rebuildTextPainterPlan() {
+  if (textPainterTxCarouselActive) stopTextPainterTxCarousel();
+  textPainterPlan = text30PlanMessage();
+  textPainterRx = text30MakeEmptyRx(textPainterRxBlindMode ? 0 : textPainterPlan.text.length);
+  textPainterFrameCursor = 0;
+  if (textPainterRxActive) resetTextPainterLiveRxState({ resetAssembly: false });
+  renderTextPainterPlan();
+  renderTextPainterAssembly();
+}
+
+function text30PushBits(bits, value, count) {
+  for (let bit = count - 1; bit >= 0; bit--) bits.push((value >> bit) & 1);
+}
+
+function text30FrameToQuadSymbols(frame) {
+  const bits = [];
+  text30PushBits(bits, frame.groupIndex, frame.indexBits);
+  for (const entry of frame.entries) text30PushBits(bits, entry.code, 5);
+  if (bits.length % 2) bits.push(0);
+  const symbols = [];
+  for (let i = 0; i < bits.length; i += 2) symbols.push((bits[i] << 1) | bits[i + 1]);
+  return symbols;
+}
+
+function buildTextPainterTxSequence(plan = text30EnsurePlan()) {
+  const symbolMs = Number(els.textPainterSymbol?.value || 200);
+  const sequence = [];
+  for (const frame of plan.frames) {
+    const frameLabel = `text-painter frame ${frame.frameIndex + 1} group ${frame.groupIndex}`;
+    sequence.push({ name: `${frameLabel}: marker tone`, tones: [getTextPainterMarkerFreq()], duration: Math.max(getPacketMarkerDurationMs(), TEXT30_MARKER_PULSE_MS), gap: 0, afterGap: TEXT30_MARKER_GUARD_MS });
+    sequence.push({ name: `${frameLabel}: compact data tones`, tones: text30FrameToQuadSymbols(frame).map(symbol => PACKET_QUAD_FREQS[symbol]), duration: symbolMs, gap: 0, afterGap: Math.max(40, symbolMs * 0.5) });
+  }
+  return sequence;
+}
+
+async function playTextPainterOnePass(label = 'text painter TX pass') {
+  const plan = text30EnsurePlan();
+  const sequence = buildTextPainterTxSequence(plan);
+  log('OK', `${label}: ${plan.frames.length} paint frames, ${plan.dataTones} data tones, ${plan.markerPulses} marker tones`);
+  await playSequence(sequence, TX_STATES.PATTERN, label);
+}
+
+function updateTextPainterTxButton() {
+  if (!els.textPainterPlay) return;
+  els.textPainterPlay.textContent = textPainterTxCarouselActive ? 'Stop TX Carousel' : 'Start TX Carousel';
+  els.textPainterPlay.classList.toggle('active', textPainterTxCarouselActive);
+  els.textPainterPlay.setAttribute('aria-pressed', textPainterTxCarouselActive ? 'true' : 'false');
+}
+
+function stopTextPainterTxCarousel() {
+  textPainterTxCarouselActive = false;
+  textPainterTxSession += 1;
+  stopTx();
+  updateTextPainterTxButton();
+  updateTextPainterDashboard();
+}
+
+async function playTextPainterPlan() {
+  if (textPainterTxCarouselActive) {
+    stopTextPainterTxCarousel();
     return;
   }
-  els.packetOut.textContent = visibleRecords.map(record => formatPacketDiagnostic(record.decoded, record.label)).join('\n');
+  textPainterTxCarouselActive = true;
+  textPainterTxSession += 1;
+  textPainterTxPass = 0;
+  const session = textPainterTxSession;
+  updateTextPainterTxButton();
+  updateTextPainterDashboard();
+  log('OK', 'text painter TX carousel started');
+  while (textPainterTxCarouselActive && session === textPainterTxSession) {
+    textPainterTxPass += 1;
+    updateTextPainterDashboard();
+    await playTextPainterOnePass(`text painter TX pass ${textPainterTxPass}`);
+    if (!textPainterTxCarouselActive || session !== textPainterTxSession) break;
+    await sleep(20);
+  }
+  if (session === textPainterTxSession) {
+    textPainterTxCarouselActive = false;
+    updateTextPainterTxButton();
+    updateTextPainterDashboard();
+  }
 }
 
-function addPacketLogRecord(decoded, now) {
-  const record = makePacketLogRecord(decoded, now);
-  packetLog.push(record);
-  packetLog = packetLog.slice(-PACKET_LOG_LIMIT);
-  renderPacketLog();
-  return record;
+
+function makeEmptyTextPainterLiveStats() {
+  return {
+    markers: 0,
+    accepted: 0,
+    rejected: 0,
+    partial: 0,
+    observations: 0,
+    startedAt: 0,
+    lastGroupIndex: null,
+    lastReason: 'idle'
+  };
 }
 
-function classifySymbolWindow(start, end, mark, space) {
-  const samples = traceBuffer.filter(s => s.timestamp >= start && s.timestamp <= end);
-  if (!samples.length) return { bit: null, confidence: 0, markAvg: 0, spaceAvg: 0, samples: 0, missing: true };
-  const markAvg = samples.reduce((sum, sample) => sum + Math.min(1, ((sample.meta?.energyMap?.[mark]) || 0) / STRONG_ENERGY), 0) / samples.length;
-  const spaceAvg = samples.reduce((sum, sample) => sum + Math.min(1, ((sample.meta?.energyMap?.[space]) || 0) / STRONG_ENERGY), 0) / samples.length;
-  const confidence = Math.abs(markAvg - spaceAvg) / Math.max(0.01, markAvg + spaceAvg);
-  return { bit: markAvg >= spaceAvg ? 1 : 0, confidence, markAvg, spaceAvg, samples, missing: false };
+function text30SetLiveStatus(message) {
+  if (els.textPainterLiveStatus) els.textPainterLiveStatus.textContent = message;
+}
+
+function updateTextPainterRxButton() {
+  if (!els.textPainterRx) return;
+  els.textPainterRx.textContent = textPainterRxActive ? 'RX Armed' : 'Arm RX';
+  els.textPainterRx.title = textPainterRxActive ? `Text-painter RX ${textPainterRxState}` : 'Arm the text-painter receiver with a fresh assembly';
+  els.textPainterRx.classList.toggle('active', textPainterRxActive);
+}
+
+function getTextPainterSymbolMs() {
+  return Number(els.textPainterSymbol?.value || 200);
+}
+
+function getTextPainterMarkerFreq() {
+  return getPacketMarkerFreq ? getPacketMarkerFreq() : TEXT30_MARKER_FREQ;
+}
+
+function text30BitsToValue(bits) {
+  return bits.reduce((value, bit) => (value << 1) | (bit ? 1 : 0), 0);
+}
+
+function text30CodeToSymbol(code) {
+  return TEXT30_ALPHABET[code] ?? '?';
+}
+
+function text30MarkerStrengthForSample(sample, markerFreq = getTextPainterMarkerFreq()) {
+  return Math.min(1, ((sample.meta?.energyMap?.[markerFreq]) || 0) / STRONG_ENERGY);
+}
+
+
+function symbolGuardMs(symbolMs) {
+  return Math.max(8, Math.min(28, symbolMs * 0.12));
 }
 
 function classifyQuadSymbolWindow(start, end) {
-  const samples = traceBuffer.filter(s => s.timestamp >= start && s.timestamp <= end);
-  if (!samples.length) return { symbol: null, confidence: 0, bestAvg: 0, secondAvg: 0, samples: 0, missing: true };
+  const samples = traceBuffer.filter(sample => sample.timestamp >= start && sample.timestamp <= end);
+  if (!samples.length) {
+    return { symbol: null, confidence: 0, bestAvg: 0, secondAvg: 0, samples: 0, missing: true };
+  }
   const scored = PACKET_QUAD_FREQS.map((freq, symbol) => {
-    const avg = samples.reduce((sum, sample) => sum + Math.min(1, ((sample.meta?.energyMap?.[freq]) || 0) / STRONG_ENERGY), 0) / samples.length;
+    const avg = samples.reduce((sum, sample) => {
+      return sum + Math.min(1, ((sample.meta?.energyMap?.[freq]) || 0) / STRONG_ENERGY);
+    }, 0) / samples.length;
     return { freq, symbol, avg };
   }).sort((a, b) => b.avg - a.avg);
   const best = scored[0];
   const second = scored[1] || { avg: 0 };
   const confidence = (best.avg - second.avg) / Math.max(0.01, best.avg + second.avg);
-  return { symbol: best.symbol, confidence, bestAvg: best.avg, secondAvg: second.avg, scored, samples, missing: false };
+  return { symbol: best.symbol, confidence, bestAvg: best.avg, secondAvg: second.avg, scored, samples: samples.length, missing: false };
 }
 
-function decodePacketBits(bits, options = {}) {
-  const preambleBits = options.preambleBits ?? PACKET_PREAMBLE_BITS.length;
-  const uncertain = options.uncertain ?? [];
-  const missing = options.missing ?? [];
-  const confidences = options.confidences ?? [];
-  const groupedBits = bits.map((bit, index) => {
-    const position = index + 1;
-    if (missing.includes(position)) return '·';
-    if (uncertain.includes(position)) return '?';
-    return String(bit);
-  }).join('').replace(/(.{8})/g, '$1 ').trim();
-  const preambleSlice = bits.slice(0, preambleBits);
-  const preambleMatches = preambleSlice.filter((bit, index) => bit === PACKET_PREAMBLE_BITS[index]).length;
-  const preambleFound = preambleSlice.length >= preambleBits && preambleMatches >= Math.ceil(preambleBits * 0.75);
-  const syncStart = preambleBits;
-  const lengthStart = syncStart + 8;
-  const payloadStart = lengthStart + 8;
-  const syncBitsCollected = Math.max(0, Math.min(8, bits.length - syncStart));
-  const lengthBitsCollected = Math.max(0, Math.min(8, bits.length - lengthStart));
-  const syncByte = syncBitsCollected === 8 ? bitsToByte(bits.slice(syncStart, syncStart + 8)) : null;
-  const length = lengthBitsCollected === 8 ? bitsToByte(bits.slice(lengthStart, lengthStart + 8)) : null;
-  const payloadBitsExpected = length === null ? 0 : length * 8;
-  const checksumStart = payloadStart + payloadBitsExpected;
-  const expectedBits = length === null ? payloadStart : checksumStart + 8;
-  const payloadBitsCollected = length === null ? 0 : Math.max(0, Math.min(payloadBitsExpected, bits.length - payloadStart));
-  const checksumBitsCollected = length === null ? 0 : Math.max(0, Math.min(8, bits.length - checksumStart));
-  const payloadBytes = [];
-  if (length !== null) {
-    const completePayloadBits = bits.slice(payloadStart, payloadStart + payloadBitsCollected - (payloadBitsCollected % 8));
-    for (let i = 0; i < completePayloadBits.length; i += 8) payloadBytes.push(bitsToByte(completePayloadBits.slice(i, i + 8)));
-  }
-  const checksum = checksumBitsCollected === 8 ? bitsToByte(bits.slice(checksumStart, checksumStart + 8)) : null;
-  const expectedChecksum = payloadBytes.length === (length ?? -1) ? payloadBytes.reduce((sum, byte) => (sum + byte) & 0xff, 0) : null;
-  const syncStatus = syncBitsCollected < 8 ? 'missing' : syncByte === PACKET_SYNC_BYTE ? 'found' : `wrong value 0x${syncByte.toString(16).padStart(2, '0')}`;
-  const checksumStatus = checksumBitsCollected < 8 ? 'NOT READY' : checksum === expectedChecksum ? 'OK' : 'BAD';
-  const coverage = bits.length / Math.max(1, expectedBits);
-  const byteAlignment = bits.length < syncStart + 8 ? 'unknown' : syncByte === PACKET_SYNC_BYTE ? 'OK' : 'shifted / unknown';
-  let finalResult = 'PARTIAL';
-  let reason = 'collecting packet fields';
-  if (!preambleFound) { finalResult = bits.length ? 'PARTIAL' : 'NO LOCK'; reason = 'preamble missing or below match threshold'; }
-  else if (syncBitsCollected < 8) { reason = 'sync marker byte is missing'; }
-  else if (syncByte !== PACKET_SYNC_BYTE) { finalResult = 'BAD'; reason = `sync marker wrong: expected 0x${PACKET_SYNC_BYTE.toString(16)}, received 0x${syncByte.toString(16).padStart(2, '0')}`; }
-  else if (lengthBitsCollected < 8) { reason = 'length byte is missing'; }
-  else if (payloadBitsCollected < payloadBitsExpected) { reason = `missing ${payloadBitsExpected - payloadBitsCollected} payload bit(s)`; }
-  else if (checksumBitsCollected < 8) { reason = `missing ${8 - checksumBitsCollected} checksum bit(s)`; }
-  else if (checksum !== expectedChecksum) { finalResult = 'BAD'; reason = `checksum bad: received 0x${checksum.toString(16).padStart(2, '0')}, computed 0x${expectedChecksum.toString(16).padStart(2, '0')}`; }
-  else { finalResult = 'OK'; reason = uncertain.some(position => position <= expectedBits) ? 'packet decoded and checksum matched; review uncertain symbol positions' : 'packet decoded and checksum matched'; }
-  const text = (finalResult === 'OK' || payloadBytes.length) ? new TextDecoder().decode(new Uint8Array(payloadBytes)).replace(/[^\x20-\x7E]/g, '?') : '';
-  return {
-    bits, groupedBits, preambleFound, preambleMatches, preambleBits, syncStatus, syncByte,
-    length, payloadBytes, checksum, expectedChecksum, checksumStatus, finalResult, reason,
-    expectedBits, collectedBits: bits.length, payloadBitsExpected, payloadBitsCollected,
-    checksumBitsExpected: 8, checksumBitsCollected, syncBitsExpected: 8, syncBitsCollected,
-    lengthBitsExpected: 8, lengthBitsCollected, byteAlignment, coverage,
-    confidence: average(confidences), uncertain, missing, text,
-    complete: bits.length >= expectedBits && checksumBitsCollected === 8,
-    checksumOk: checksumStatus === 'OK' && finalResult === 'OK'
+function textPainterRxOffsetCandidates(marker) {
+  const offsets = new Set();
+  const add = value => {
+    const rounded = Math.round(value / PACKET_RX_OFFSET_STEP_MS) * PACKET_RX_OFFSET_STEP_MS;
+    if (rounded >= PACKET_RX_OFFSET_MIN_MS && rounded <= PACKET_RX_OFFSET_MAX_MS) offsets.add(rounded);
   };
+  for (let offset = PACKET_RX_OFFSET_MIN_MS; offset <= PACKET_RX_OFFSET_MAX_MS; offset += PACKET_RX_OFFSET_STEP_MS) add(offset);
+  add(PACKET_RX_BODY_OFFSET_MS);
+  const markerDuration = getPacketMarkerDurationMs();
+  const seenDuration = marker.markerDurationSeen ?? markerDuration;
+  const durationCompensated = TEXT30_MARKER_GUARD_MS + Math.max(0, markerDuration - seenDuration);
+  for (const delta of [-75, -50, -25, 0, 25, 50, 75]) add(durationCompensated + delta);
+  return [...offsets].sort((a, b) => a - b);
 }
 
-function decodePacketFrom(startTime, now = performance.now()) {
-  const mark = Number(els.packetMark.value);
-  const space = Number(els.packetSpace.value);
-  const symbolMs = Number(els.packetSymbol.value);
-  const preambleBits = PACKET_PREAMBLE_BITS.length;
-  const maxBits = preambleBits + 16 + (255 + 1) * 8;
-  const bits = [];
-  const uncertain = [];
-  const missing = [];
-  const confidences = [];
-  for (let index = 0; index < maxBits; index++) {
-    const guard = symbolGuardMs(symbolMs);
-    const start = startTime + index * symbolMs + guard;
-    const end = startTime + (index + 1) * symbolMs - guard;
-    if (now < end) break;
-    const classified = classifySymbolWindow(start, end, mark, space);
-    const position = index + 1;
-    if (classified.missing) { missing.push(position); break; }
-    bits.push(classified.bit);
-    confidences.push(classified.confidence);
-    if (classified.confidence < 0.18 || Math.max(classified.markAvg, classified.spaceAvg) < 0.10) uncertain.push(position);
-    if (bits.length >= preambleBits + 16) {
-      const payloadLength = bitsToByte(bits.slice(preambleBits + 8, preambleBits + 16));
-      const needed = preambleBits + 16 + payloadLength * 8 + 8;
-      if (bits.length >= needed) break;
-    }
-  }
-  return decodePacketBits(bits, { preambleBits, uncertain, missing, confidences });
-}
-
-
-function decodeMicroframeFrom(startTime, now = performance.now()) {
-  const mark = Number(els.packetMark.value);
-  const space = Number(els.packetSpace.value);
-  const symbolMs = Number(els.packetSymbol.value);
-  const mode = getPacketFrameMode();
-  const preambleBits = PACKET_PREAMBLE_BITS.length;
-  const maxBytes = mode === 'checked' ? 7 : 6;
-  const maxBits = preambleBits + maxBytes * 8;
-  const bits = [];
-  const uncertain = [];
-  const missing = [];
-  const confidences = [];
-  for (let index = 0; index < maxBits; index++) {
-    const guard = symbolGuardMs(symbolMs);
-    const start = startTime + index * symbolMs + guard;
-    const end = startTime + (index + 1) * symbolMs - guard;
-    if (now < end) break;
-    const classified = classifySymbolWindow(start, end, mark, space);
-    const position = index + 1;
-    if (classified.missing) { missing.push(position); break; }
-    bits.push(classified.bit);
-    confidences.push(classified.confidence);
-    if (classified.confidence < 0.18 || Math.max(classified.markAvg, classified.spaceAvg) < 0.10) uncertain.push(position);
-    if (bits.length >= preambleBits + 8) {
-      const sync = bitsToByte(bits.slice(preambleBits, preambleBits + 8));
-      const neededBytes = sync === MICROFRAME_META_SYNC ? (mode === 'checked' ? 7 : 6) : (mode === 'checked' ? 5 : 4);
-      if (bits.length >= preambleBits + neededBytes * 8) break;
-      if (sync !== MICROFRAME_DATA_SYNC && sync !== MICROFRAME_META_SYNC && bits.length >= preambleBits + 8) break;
-    }
-  }
-  const preambleSlice = bits.slice(0, preambleBits);
-  const preambleMatches = preambleSlice.filter((bit, index) => bit === PACKET_PREAMBLE_BITS[index]).length;
-  const preambleFound = preambleSlice.length >= preambleBits && preambleMatches >= Math.ceil(preambleBits * 0.75);
-  const payloadBits = bits.slice(preambleBits);
-  const bytes = [];
-  for (let i = 0; i + 7 < payloadBits.length; i += 8) bytes.push(bitsToByte(payloadBits.slice(i, i + 8)));
-  const decoded = decodeMicroframeBytes(bytes, mode);
-  const syncStatus = bytes.length ? (decoded.type === 'candidate' ? 'wrong marker' : 'found') : 'missing';
-  const expectedPayloadBytes = bytes[0] === MICROFRAME_META_SYNC ? (mode === 'checked' ? 7 : 6) : (mode === 'checked' ? 5 : 4);
-  const expectedBits = preambleBits + expectedPayloadBytes * 8;
-  let finalResult = decoded.finalResult;
-  let reason = decoded.reason;
-  if (!preambleFound) { finalResult = bits.length ? 'PARTIAL' : 'NO LOCK'; reason = 'candidate lock below preamble match threshold'; }
-  return {
-    ...decoded,
-    bits,
-    groupedBits: bits.map((bit, index) => missing.includes(index + 1) ? '·' : uncertain.includes(index + 1) ? '?' : String(bit)).join('').replace(new RegExp(`(.{${groupSize}})`, 'g'), '$1 ').trim(),
-    preambleFound,
-    preambleMatches,
-    preambleBits,
-    syncStatus,
-    syncByte: bytes.length ? bytes[0] : null,
-    rawFrameBytes: bytes,
-    finalResult,
-    reason,
-    expectedBits,
-    collectedBits: bits.length,
-    frameBytesCollected: bytes.length,
-    expectedFrameBytes: expectedPayloadBytes,
-    coverage: bits.length / Math.max(1, expectedBits),
-    confidence: average(confidences),
-    uncertain,
-    missing,
-    complete: bytes.length >= expectedPayloadBytes,
-    checkStatus: decoded.checkPassed === undefined ? 'not used' : decoded.checkPassed ? 'OK' : 'BAD',
-    mode
-  };
-}
-
-function packetKindFromDecoded(decoded) {
-  if (decoded.delimiterMode === 'tone' && decoded.markerPattern) {
-    if (decoded.finalResult === 'BAD') return decoded.type === 'meta' ? 'meta_rejected' : 'microframe_rejected';
-    if (decoded.type === 'meta' && decoded.finalResult === 'OK') return 'meta_eof';
-    if (decoded.type === 'data' && decoded.finalResult === 'OK') return 'microframe_observation';
-    return 'marker_acquired';
-  }
-  if (!decoded.preambleFound) return 'candidate_lock';
-  if (decoded.type === 'candidate') return 'false_lock';
-  if (decoded.finalResult === 'BAD') return decoded.type === 'meta' ? 'meta_rejected' : 'microframe_rejected';
-  if (decoded.type === 'meta' && decoded.finalResult === 'OK') return 'meta_eof';
-  if (decoded.type === 'data' && decoded.finalResult === 'OK') return 'microframe_observation';
-  return 'candidate_lock';
-}
-
-function packetLabelForKind(kind, decoded) {
-  if (kind === 'microframe_observation') return `Microframe observation ${String(packetAttemptCount).padStart(3, '0')}: seq ${decoded.seq}`;
-  if (kind === 'meta_eof') return `META/EOF ${String(packetAttemptCount).padStart(3, '0')}: length ${decoded.length}, slots ${decoded.totalSlots}`;
-  if (kind === 'microframe_rejected') return `Microframe ${String(packetAttemptCount).padStart(3, '0')} rejected`;
-  if (kind === 'meta_rejected') return `META/EOF ${String(packetAttemptCount).padStart(3, '0')} rejected`;
-  if (kind === 'false_lock') return `Candidate ${String(packetCandidateCount).padStart(3, '0')}: false lock / wrong marker`;
-  if (kind === 'marker_acquired') return `Marker ${String(packetCandidateCount).padStart(3, '0')}: tone acquired`;
-  return `Candidate ${String(packetCandidateCount).padStart(3, '0')}: candidate lock`;
-}
-
-function makePacketLogRecord(decoded, now = performance.now()) {
-  const kind = packetKindFromDecoded(decoded);
-  if (['microframe_observation', 'meta_eof', 'microframe_rejected', 'meta_rejected'].includes(kind)) packetAttemptCount += 1;
-  else packetCandidateCount += 1;
-  const timestampDate = new Date(Date.now() - (performance.now() - now));
-  const syncHex = decoded.syncByte === null || decoded.syncByte === undefined ? null : `0x${decoded.syncByte.toString(16).padStart(2, '0')}`;
-  const label = packetLabelForKind(kind, decoded);
-  const bestSlot = decoded.type === 'data' ? microframeRx.slots.get(decoded.seq) : null;
-  const bestObservation = bestSlot ? bestObservationForSlot(bestSlot) : null;
-  return {
-    kind,
-    timestamp: timestampDate.toISOString(),
-    session: packetLogSession,
-    label,
-    collectedBits: decoded.collectedBits,
-    expectedBits: decoded.expectedBits,
-    preambleMatches: decoded.preambleMatches,
-    markerFrequency: decoded.markerFrequency ?? null,
-    markerStrength: decoded.markerStrength ?? null,
-    markerDurationSeen: decoded.markerDurationSeen ?? null,
-    markerPattern: decoded.markerPattern ?? null,
-    markerStartTimestamp: decoded.markerStart ? new Date(Date.now() - (performance.now() - decoded.markerStart)).toISOString() : null,
-    markerEndTimestamp: decoded.markerEnd ? new Date(Date.now() - (performance.now() - decoded.markerEnd)).toISOString() : null,
-    guardGapMs: decoded.guardGapMs ?? null,
-    decodedFrameBodyBits: decoded.groupedBits ?? null,
-    acceptRejectReason: decoded.reason,
-    syncStatus: kind === 'false_lock' ? 'wrong marker' : decoded.syncStatus,
-    syncByte: syncHex,
-    frameMode: decoded.mode,
-    frameType: decoded.type,
-    seq: decoded.seq ?? null,
-    dataBytes: decoded.dataBytes ? [...decoded.dataBytes] : null,
-    dataText: decoded.dataBytes ? decoded.dataBytes.map(byte => sanitizeByteForDisplay(byte)).join('') : null,
-    repetitionCount: bestObservation?.count ?? null,
-    confidence: decoded.confidence,
-    perFrameCheck: decoded.checkStatus,
-    meta: decoded.type === 'meta' ? { messageId: decoded.messageId, length: decoded.length, totalSlots: decoded.totalSlots, crc: decoded.crc } : null,
-    finalCrcOk: microframeRx.finalCrcOk,
-    finalResult: decoded.finalResult,
-    reason: decoded.reason,
-    assembledTextState: microframeRx.lastAssembledText,
-    assemblyStatus: microframeRx.lastStateLine,
-    rawBits: decoded.bits.join(''),
-    rawFrameBytes: decoded.rawFrameBytes ? decoded.rawFrameBytes.map(byte => `0x${byte.toString(16).padStart(2, '0')}`) : [],
-    uncertainSymbols: [...decoded.uncertain],
-    missedSymbols: [...decoded.missing],
-    decoded
-  };
-}
-
-function compactRatio(value) {
-  const rounded = Math.max(0, Math.min(1, Number(value) || 0)).toFixed(2);
-  return rounded.startsWith('0') ? rounded.slice(1) : rounded;
-}
-
-function compactBytes(bytes = []) {
-  return bytes.map(byte => byte.toString(16).padStart(2, '0')).join(' ');
-}
-
-function expectedDataBytesForSeq(seq) {
-  return buildMicroframePlan().slots.find(slot => slot.seq === seq)?.bytes ?? [];
-}
-
-function expectedSeq0FrameBytes() {
-  const slot = buildMicroframePlan().slots.find(slot => slot.seq === 0);
-  return [0, ...(slot?.bytes ?? [])];
-}
-
-function decodeToneBytesAtOffset(markerEnd, offsetMs, byteCount) {
-  const symbolMs = Number(els.packetSymbol.value);
-  const mark = Number(els.packetMark.value);
-  const space = Number(els.packetSpace.value);
-  const startTime = markerEnd + offsetMs;
-  const bits = [];
-  const bitLabels = [];
-  const confidences = [];
-  for (let index = 0; index < byteCount * 8; index++) {
-    const guard = symbolGuardMs(symbolMs);
-    const classified = classifySymbolWindow(
-      startTime + index * symbolMs + guard,
-      startTime + (index + 1) * symbolMs - guard,
-      mark,
-      space
-    );
-    bitLabels.push(classified.missing ? '·' : String(classified.bit));
-    bits.push(classified.missing ? null : classified.bit);
-    confidences.push(classified.confidence);
-  }
-  const bytes = [];
-  for (let i = 0; i + 7 < bits.length; i += 8) {
-    const byteBits = bits.slice(i, i + 8);
-    bytes.push(byteBits.some(bit => bit === null) ? null : bitsToByte(byteBits));
-  }
-  return { bytes, bits: bitLabels.join(''), confidence: average(confidences) };
-}
-
-function expectedDataFramesForCurrentCarousel() {
-  return buildMicroframePlan().slots.map(slot => ({
-    seq: slot.seq,
-    frameBytes: [slot.seq & 0xff, slot.bytes[0] & 0xff, slot.bytes[1] & 0xff],
-    dataBytes: slot.bytes,
-    text: slot.bytes.map(byte => sanitizeByteForDisplay(byte)).join('')
-  }));
-}
-
-function compactKnownMatchSweep(decoded) {
-  if (decoded.knownMatchSweep !== undefined) return decoded.knownMatchSweep;
-  if (decoded.delimiterMode !== 'tone' || decoded.type !== 'data' || !decoded.markerEnd) return '';
-  const expectedFrames = expectedDataFramesForCurrentCarousel();
-  const lines = [];
-  for (let offset = -250; offset <= 300; offset += 25) {
-    const candidate = decodeToneBytesAtOffset(decoded.markerEnd, offset, 3);
-    if (candidate.bytes.some(byte => byte === null)) continue;
-    const match = expectedFrames.find(expected =>
-      expected.frameBytes.every((byte, index) => candidate.bytes[index] === byte)
-    );
-    if (!match) continue;
-    lines.push(`SWEEP_MATCH DATA off=${offset}ms seq=${match.seq} bytes=${compactBytes(candidate.bytes)} text="${match.text}" conf=${compactRatio(candidate.confidence)}`);
-  }
-  decoded.knownMatchSweep = lines.length ? `\n${lines.join('\n')}` : '';
-  return decoded.knownMatchSweep;
-}
-
-
-function expectedToneDataFramesForClockFit() {
-  const mode = getPacketFrameMode();
-  return buildMicroframePlan().slots.map(slot => {
-    const frameBytes = toneDelimitedBytesWithOptionalCheck([slot.seq & 0xff, slot.bytes[0] & 0xff, slot.bytes[1] & 0xff], mode);
-    return {
-      seq: slot.seq,
-      frameBytes,
-      dataBytes: slot.bytes,
-      text: slot.bytes.map(byte => sanitizeByteForDisplay(byte)).join('')
-    };
-  });
-}
-
-function scoreExpectedBitsWithClock(markerEnd, offsetMs, candidateSymbolMs, expectedBits, mark, space) {
-  let match = 0;
-  let decided = 0;
-  let confidenceSum = 0;
-  let score = 0;
-  const bitLabels = [];
-  for (let index = 0; index < expectedBits.length; index++) {
-    const guard = symbolGuardMs(candidateSymbolMs);
-    const classified = classifySymbolWindow(
-      markerEnd + offsetMs + index * candidateSymbolMs + guard,
-      markerEnd + offsetMs + (index + 1) * candidateSymbolMs - guard,
-      mark,
-      space
-    );
-    if (classified.missing) {
-      bitLabels.push('·');
-      score -= 0.20;
-      continue;
-    }
-    decided += 1;
-    confidenceSum += classified.confidence;
-    const weight = Math.max(0.05, classified.confidence);
-    if (classified.bit === expectedBits[index]) {
-      match += 1;
-      score += weight;
-    } else {
-      score -= weight;
-    }
-    bitLabels.push(String(classified.bit));
-  }
-  return {
-    match,
-    decided,
-    confidence: decided ? confidenceSum / decided : 0,
-    score: score / Math.max(1, expectedBits.length),
-    bits: bitLabels.join('')
-  };
-}
-
-function decodeToneBytesAtClock(markerEnd, offsetMs, candidateSymbolMs, byteCount) {
-  const mark = Number(els.packetMark.value);
-  const space = Number(els.packetSpace.value);
-  const bits = [];
-  const bitLabels = [];
-  const confidences = [];
-  for (let index = 0; index < byteCount * 8; index++) {
-    const guard = symbolGuardMs(candidateSymbolMs);
-    const classified = classifySymbolWindow(
-      markerEnd + offsetMs + index * candidateSymbolMs + guard,
-      markerEnd + offsetMs + (index + 1) * candidateSymbolMs - guard,
-      mark,
-      space
-    );
-    bitLabels.push(classified.missing ? '·' : String(classified.bit));
-    bits.push(classified.missing ? null : classified.bit);
-    confidences.push(classified.confidence);
-  }
-  const bytes = [];
-  for (let i = 0; i + 7 < bits.length; i += 8) {
-    const byteBits = bits.slice(i, i + 8);
-    bytes.push(byteBits.some(bit => bit === null) ? null : bitsToByte(byteBits));
-  }
-  return { bytes, bits: bitLabels.join(''), confidence: average(confidences) };
-}
-
-function clockFitCandidatesForFrames(markerEnd, frames, nominalSymbolMs, mark, space) {
-  const candidates = [];
-  for (let symbolDelta = -PACKET_CLOCKFIT_SYMBOL_DELTA_MS; symbolDelta <= PACKET_CLOCKFIT_SYMBOL_DELTA_MS; symbolDelta += PACKET_CLOCKFIT_SYMBOL_STEP_MS) {
-    const candidateSymbolMs = nominalSymbolMs + symbolDelta;
-    if (candidateSymbolMs < 40) continue;
-    for (let offset = PACKET_CLOCKFIT_OFFSET_MIN_MS; offset <= PACKET_CLOCKFIT_OFFSET_MAX_MS; offset += PACKET_CLOCKFIT_OFFSET_STEP_MS) {
-      for (const frame of frames) {
-        const expectedBits = frame.frameBytes.flatMap(byteToBits);
-        const scored = scoreExpectedBitsWithClock(markerEnd, offset, candidateSymbolMs, expectedBits, mark, space);
-        candidates.push({ frame, offset, symbolMs: candidateSymbolMs, symbolDelta, expectedBits, ...scored });
-      }
-    }
-  }
-  candidates.sort((a, b) =>
-    (b.score - a.score) ||
-    (b.match - a.match) ||
-    (b.confidence - a.confidence) ||
-    (Math.abs(a.symbolDelta) - Math.abs(b.symbolDelta)) ||
-    (Math.abs(a.offset - PACKET_RX_BODY_OFFSET_MS) - Math.abs(b.offset - PACKET_RX_BODY_OFFSET_MS))
-  );
-  return candidates;
-}
-
-function compactClockFitSweep(decoded) {
-  if (decoded.clockFitSweep !== undefined) return decoded.clockFitSweep;
-  if (decoded.delimiterMode !== 'tone' || decoded.type !== 'data' || !decoded.markerEnd) return '';
-  const nominalSymbolMs = Number(els.packetSymbol.value);
-  const mark = Number(els.packetMark.value);
-  const space = Number(els.packetSpace.value);
-  const allFrames = expectedToneDataFramesForClockFit();
-  const inRangeFrames = allFrames.filter(frame => frame.seq === decoded.seq);
-  let candidates = clockFitCandidatesForFrames(decoded.markerEnd, inRangeFrames.length ? inRangeFrames : allFrames, nominalSymbolMs, mark, space);
-  if (inRangeFrames.length && candidates.length && candidates[0].match < Math.ceil(candidates[0].expectedBits.length * 0.75)) {
-    candidates = clockFitCandidatesForFrames(decoded.markerEnd, allFrames, nominalSymbolMs, mark, space);
-  }
-  const best = candidates[0];
-  if (!best) {
-    decoded.clockFitSweep = '';
-    return decoded.clockFitSweep;
-  }
-  const observed = decodeToneBytesAtClock(decoded.markerEnd, best.offset, best.symbolMs, best.frame.frameBytes.length);
-  const startDelta = best.offset - PACKET_RX_BODY_OFFSET_MS;
-  const endDrift = best.symbolDelta * best.expectedBits.length;
-  const seqNote = decoded.seq === best.frame.seq ? '' : ` decodedSeq=${decoded.seq}`;
-  const top = candidates.slice(0, 3).map(item => `seq${item.frame.seq}@${Math.round(item.offset)}/${Math.round(item.symbolMs)}=${item.match}/${item.expectedBits.length}`).join(' ');
-  decoded.clockFitSweep = `\nCLOCKFIT DATA bestSeq=${best.frame.seq}${seqNote} off=${Math.round(best.offset)}ms startΔ=${Math.round(startDelta)}ms sym=${Math.round(best.symbolMs)}ms symΔ=${Math.round(best.symbolDelta)}ms endDrift=${Math.round(endDrift)}ms match=${best.match}/${best.expectedBits.length} score=${compactRatio((best.score + 1) / 2)} conf=${compactRatio(best.confidence)} bytes=${compactBytes(observed.bytes)} expected=${compactBytes(best.frame.frameBytes)}\nCLOCKFIT_TOP ${top}`;
-  return decoded.clockFitSweep;
-}
-
-function compactOffsetSweep(decoded) {
-  if (decoded.compactOffsetSweep !== undefined) return decoded.compactOffsetSweep;
-  if (decoded.delimiterMode !== 'tone' || decoded.type !== 'data' || packetBadSeq0SweepDone || !decoded.markerEnd) return '';
-  packetBadSeq0SweepDone = true;
-  const symbolMs = Number(els.packetSymbol.value);
-  const mark = Number(els.packetMark.value);
-  const space = Number(els.packetSpace.value);
-  const expected = expectedSeq0FrameBytes();
-  const lines = [`OFFSET_SWEEP_EXPECTED_SEQ0 expected=${compactBytes(expected)}`];
-  for (let offset = -250; offset <= 300; offset += 25) {
-    const bitLabels = [];
-    const confidences = [];
-    const startTime = decoded.markerEnd + offset;
-    for (let index = 0; index < 24; index++) {
-      const guard = symbolGuardMs(symbolMs);
-      const classified = classifySymbolWindow(startTime + index * symbolMs + guard, startTime + (index + 1) * symbolMs - guard, mark, space);
-      bitLabels.push(classified.missing ? '·' : String(classified.bit));
-      confidences.push(classified.confidence);
-    }
-    const byteLabels = [];
-    const bytes = [];
-    for (let i = 0; i + 7 < bitLabels.length; i += 8) {
-      const byteBits = bitLabels.slice(i, i + 8);
-      if (byteBits.some(bit => bit === '·')) {
-        byteLabels.push('..');
-        bytes.push(null);
-      } else {
-        const byte = bitsToByte(byteBits.map(bit => Number(bit)));
-        byteLabels.push(byte.toString(16).padStart(2, '0'));
-        bytes.push(byte);
-      }
-    }
-    const match = bytes.length === expected.length && bytes.every((byte, index) => byte !== null && byte === expected[index]);
-    lines.push(`${offset}ms bytes=${byteLabels.join(' ')} bits=${bitLabels.join('')} conf=${compactRatio(average(confidences))} match=${match ? 'yes' : 'no'}`);
-  }
-  decoded.compactOffsetSweep = `\n${lines.join('\n')}`;
-  return decoded.compactOffsetSweep;
-}
-
-
-function compactAdaptiveRx(decoded) {
-  if (!decoded.adaptiveRx) return '';
-  const top = decoded.adaptiveRx.top
-    .map(item => `${Math.round(item.offset)}ms:${compactRatio(item.score)}:${item.seq === null ? '--' : item.seq}`)
-    .join(' ');
-  const selected = decoded.adaptiveRx.selectedOffset;
-  const delta = selected - decoded.adaptiveRx.nominalOffset;
-  return `\nADAPT_RX selected=${Math.round(selected)}ms delta=${Math.round(delta)}ms score=${compactRatio(decoded.adaptiveRx.score)} top=${top}`;
-}
-
-function formatPacketDiagnostic(decoded, label = 'Decode candidate') {
-  const prefix = decoded.type === 'meta' ? 'META' : decoded.type === 'data' ? 'DATA' : label;
-  const common = `marker=${Math.round(decoded.markerFrequency || getPacketMarkerFreq())} strength=${compactRatio(decoded.markerStrength)} dur=${Math.round(decoded.markerDurationSeen || 0)}ms guard=${Math.round(decoded.guardGapMs ?? PACKET_MARKER_GUARD_MS)} rxOff=${Math.round(decoded.rxBodyOffsetMs ?? PACKET_RX_BODY_OFFSET_MS)}`;
-  if (decoded.type === 'meta') return `${prefix} ${common} len=${decoded.length} slots=${decoded.totalSlots} crc=${decoded.crc.toString(16).padStart(4, '0')}`;
-  if (decoded.type === 'data') {
-    const expected = PACKET_EXPECTED_DEBUG_LOGS ? expectedDataBytesForSeq(decoded.seq) : [];
-    const expectedPart = PACKET_EXPECTED_DEBUG_LOGS ? ` expected=${compactBytes(expected)}` : '';
-    const text = decoded.dataBytes.map(byte => sanitizeByteForDisplay(byte)).join('');
-    return `${prefix} ${common} seq=${decoded.seq} bytes=${compactBytes(decoded.dataBytes)} text="${text}" conf=${compactRatio(decoded.confidence)}${expectedPart}${compactAdaptiveRx(decoded)}${PACKET_VERBOSE_ORACLE_LOGS ? compactKnownMatchSweep(decoded) + compactClockFitSweep(decoded) : ''}`;
-  }
-  return `${prefix} ${common} result=${decoded.finalResult} bytes=${compactBytes(decoded.rawFrameBytes || [])} conf=${compactRatio(decoded.confidence)}`;
-}
-
-function average(values) {
-  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
-}
-
-
-function markerStrengthForSample(sample, markerFreq = getPacketMarkerFreq()) {
-  return Math.min(1, ((sample.meta?.energyMap?.[markerFreq]) || 0) / STRONG_ENERGY);
-}
-
-function findToneMarkerCandidate(now) {
-  const markerFreq = getPacketMarkerFreq();
-  const lookbackStart = Math.max(packetRxArmTime, packetSeenUntil, now - 6000);
+function findTextPainterMarkerCandidate(now) {
+  const markerFreq = getTextPainterMarkerFreq();
+  const lookbackStart = Math.max(textPainterRxArmTime, textPainterSeenUntil, now - 6000);
   const samples = traceBuffer.filter(sample => sample.timestamp >= lookbackStart && sample.timestamp <= now);
   if (!samples.length) return { state: 'watching marker tone', reason: 'no recent detector samples', markerFrequency: markerFreq };
   const runs = [];
   let run = null;
   for (const sample of samples) {
-    const strength = markerStrengthForSample(sample, markerFreq);
-    const on = strength >= PACKET_MARKER_THRESHOLD && strength >= markerStrengthForSample(sample, Number(els.packetSpace.value)) * 1.25 && strength >= markerStrengthForSample(sample, Number(els.packetMark.value)) * 1.25;
+    const strength = text30MarkerStrengthForSample(sample, markerFreq);
+    const on = strength >= PACKET_MARKER_THRESHOLD;
     if (on) {
       if (!run || sample.timestamp - run.end > DETECT_INTERVAL_MS * 2.5) {
         if (run) runs.push(run);
@@ -2348,59 +1805,35 @@ function findToneMarkerCandidate(now) {
   if (run) runs.push(run);
   const completeRuns = runs
     .map(item => ({ ...item, duration: item.end - item.start + DETECT_INTERVAL_MS, strength: average(item.strengths) }))
-    .filter(item => item.duration >= PACKET_MARKER_MIN_MS && item.start > packetLastMarkerStart + PACKET_MARKER_SPLIT_MS);
+    .filter(item => item.duration >= PACKET_MARKER_MIN_MS && item.start > textPainterLastMarkerStart + PACKET_MARKER_SPLIT_MS);
   if (!completeRuns.length) {
-    const bestStrength = Math.max(0, ...samples.map(sample => markerStrengthForSample(sample, markerFreq)));
-    return { state: bestStrength >= PACKET_MARKER_THRESHOLD ? 'marker tone rising' : 'watching marker tone', reason: 'waiting for a complete frame marker pulse', markerFrequency: markerFreq, markerStrength: bestStrength };
+    const bestStrength = Math.max(0, ...samples.map(sample => text30MarkerStrengthForSample(sample, markerFreq)));
+    return { state: bestStrength >= PACKET_MARKER_THRESHOLD ? 'marker tone rising' : 'watching marker tone', reason: 'waiting for a complete marker tone', markerFrequency: markerFreq, markerStrength: bestStrength };
   }
-  for (let index = 0; index < completeRuns.length; index++) {
-    const first = completeRuns[index];
-    const second = completeRuns[index + 1];
-    if (second) {
-      const gap = second.start - first.end;
-      if (gap >= 45 && gap <= PACKET_MARKER_META_MAX_GAP_MS) {
-        const markerEnd = second.end;
-        if (now < markerEnd + PACKET_MARKER_GUARD_MS) return { state: 'META/EOF marker acquired', reason: 'waiting through guard gap', markerFrequency: markerFreq, markerStart: first.start, markerEnd, markerPattern: 'META', markerStrength: average([first.strength, second.strength]), markerDurationSeen: (first.end - first.start) + (second.end - second.start) + gap };
-        return { markerFrequency: markerFreq, markerStart: first.start, markerEnd, markerPattern: 'META', markerStrength: average([first.strength, second.strength]), markerDurationSeen: (first.end - first.start) + (second.end - second.start) + gap, guardGapMs: PACKET_MARKER_GUARD_MS, accepted: true, reason: 'two-pulse META/EOF marker acquired' };
-      }
-    }
-    if (now < first.end + PACKET_MARKER_META_MAX_GAP_MS) {
-      return { state: 'DATA marker acquired', reason: 'waiting briefly to rule out second META/EOF pulse', markerFrequency: markerFreq, markerStart: first.start, markerEnd: first.end, markerPattern: 'unknown', markerStrength: first.strength, markerDurationSeen: first.duration };
-    }
-    if (now < first.end + PACKET_MARKER_GUARD_MS) {
-      return { state: 'DATA marker acquired', reason: 'waiting through guard gap', markerFrequency: markerFreq, markerStart: first.start, markerEnd: first.end, markerPattern: 'DATA', markerStrength: first.strength, markerDurationSeen: first.duration };
-    }
-    return { markerFrequency: markerFreq, markerStart: first.start, markerEnd: first.end, markerPattern: 'DATA', markerStrength: first.strength, markerDurationSeen: first.duration, guardGapMs: PACKET_MARKER_GUARD_MS, accepted: true, reason: 'single-pulse DATA marker acquired' };
+  const marker = completeRuns[0];
+  if (now < marker.end + TEXT30_MARKER_GUARD_MS) {
+    return { state: 'marker acquired', reason: 'waiting through guard gap', markerFrequency: markerFreq, markerStart: marker.start, markerEnd: marker.end, markerStrength: marker.strength, markerDurationSeen: marker.duration };
   }
-  return { state: 'watching marker tone', reason: 'no usable marker pattern yet', markerFrequency: markerFreq };
-}
-
-
-function packetRxOffsetCandidates(marker) {
-  const offsets = new Set();
-  const add = value => {
-    const rounded = Math.round(value / PACKET_RX_OFFSET_STEP_MS) * PACKET_RX_OFFSET_STEP_MS;
-    if (rounded >= PACKET_RX_OFFSET_MIN_MS && rounded <= PACKET_RX_OFFSET_MAX_MS) offsets.add(rounded);
+  return {
+    markerFrequency: markerFreq,
+    markerStart: marker.start,
+    markerEnd: marker.end,
+    markerStrength: marker.strength,
+    markerDurationSeen: marker.duration,
+    guardGapMs: TEXT30_MARKER_GUARD_MS,
+    accepted: true,
+    reason: 'marker tone acquired'
   };
-  for (let offset = PACKET_RX_OFFSET_MIN_MS; offset <= PACKET_RX_OFFSET_MAX_MS; offset += PACKET_RX_OFFSET_STEP_MS) add(offset);
-  add(PACKET_RX_BODY_OFFSET_MS);
-  const markerDuration = getPacketMarkerDurationMs();
-  const seenDuration = marker.markerDurationSeen ?? markerDuration;
-  const durationCompensated = PACKET_MARKER_GUARD_MS + Math.max(0, markerDuration - seenDuration);
-  for (const delta of [-75, -50, -25, 0, 25, 50, 75]) add(durationCompensated + delta);
-  return [...offsets].sort((a, b) => a - b);
 }
 
-function decodeToneDelimitedMicroframeAtOffset(marker, offsetMs, now = performance.now()) {
-  const mark = Number(els.packetMark.value);
-  const space = Number(els.packetSpace.value);
-  const symbolMs = Number(els.packetSymbol.value);
-  const mode = getPacketFrameMode();
-  const markerPattern = marker.markerPattern || 'unknown';
-  const expectedFrameBytes = markerPattern === 'META' ? (mode === 'checked' ? 6 : 5) : (mode === 'checked' ? 4 : 3);
-  const expectedSymbols = bodySymbolCountForBytes(expectedFrameBytes);
+function decodeTextPainterFrameAtOffset(marker, offsetMs, now = performance.now()) {
+  const plan = text30EnsurePlan();
+  const symbolMs = getTextPainterSymbolMs();
+  const expectedBits = plan.indexBits + plan.groupWidth * 5;
+  const expectedSymbols = Math.ceil(expectedBits / 2);
   const startTime = marker.markerEnd + offsetMs;
   const symbols = [];
+  const bits = [];
   const uncertain = [];
   const missing = [];
   const confidences = [];
@@ -2409,395 +1842,215 @@ function decodeToneDelimitedMicroframeAtOffset(marker, offsetMs, now = performan
     const start = startTime + index * symbolMs + guard;
     const end = startTime + (index + 1) * symbolMs - guard;
     if (now < end) break;
-    const classified = PACKET_BODY_MODE === 'quad' ? classifyQuadSymbolWindow(start, end) : classifySymbolWindow(start, end, mark, space);
+    const classified = classifyQuadSymbolWindow(start, end);
     const position = index + 1;
     if (classified.missing) { missing.push(position); break; }
-    const value = PACKET_BODY_MODE === 'quad' ? classified.symbol : classified.bit;
-    symbols.push(value);
+    symbols.push(classified.symbol);
+    bits.push((classified.symbol >> 1) & 1, classified.symbol & 1);
     confidences.push(classified.confidence);
-    const peak = PACKET_BODY_MODE === 'quad' ? classified.bestAvg : Math.max(classified.markAvg, classified.spaceAvg);
-    if (classified.confidence < 0.18 || peak < 0.10) uncertain.push(position);
+    if (classified.confidence < 0.18 || classified.bestAvg < 0.10) uncertain.push(position);
   }
-  const rawFrameBytes = [];
-  if (PACKET_BODY_MODE === 'quad') {
-    for (let i = 0; i + 3 < symbols.length; i += 4) rawFrameBytes.push(quadSymbolsToByte(symbols.slice(i, i + 4)));
-  } else {
-    for (let i = 0; i + 7 < symbols.length; i += 8) rawFrameBytes.push(bitsToByte(symbols.slice(i, i + 8)));
+  const usableBits = bits.slice(0, expectedBits);
+  const complete = symbols.length >= expectedSymbols && usableBits.length >= expectedBits;
+  if (!complete) {
+    return {
+      type: 'text30', finalResult: 'PARTIAL', reason: 'flat-5 paint frame still collecting', complete: false,
+      marker, markerFrequency: marker.markerFrequency, markerStrength: marker.markerStrength ?? 0, markerDurationSeen: marker.markerDurationSeen ?? 0,
+      markerStart: marker.markerStart, markerEnd: marker.markerEnd, guardGapMs: TEXT30_MARKER_GUARD_MS, rxBodyOffsetMs: offsetMs,
+      expectedBits, expectedSymbols, collectedSymbols: symbols.length, collectedBits: usableBits.length, symbols, bits: usableBits,
+      uncertain, missing, confidence: average(confidences), startTime
+    };
   }
-  const decoded = decodeToneDelimitedFrameBytes(rawFrameBytes, markerPattern, mode);
-  return decorateToneDelimitedDecoded(decoded, { bits: symbols, rawFrameBytes, uncertain, missing, confidences, marker, expectedFrameBytes, expectedSymbols, now, startTime, offsetMs, mode });
+  const groupIndex = text30BitsToValue(usableBits.slice(0, plan.indexBits));
+  const entries = [];
+  const blindDecode = textPainterRxBlindMode || !plan.hasExpectedText;
+  let cursor = plan.indexBits;
+  for (let side = 0; side < plan.groupWidth; side++) {
+    const code = text30BitsToValue(usableBits.slice(cursor, cursor + 5));
+    const position = groupIndex * plan.groupWidth + side;
+    const symbol = text30CodeToSymbol(code);
+    entries.push({ position, code, symbol, kind: blindDecode || position < plan.text.length ? 'char' : 'pad' });
+    cursor += 5;
+  }
+  const allowedGroups = blindDecode ? plan.maxGroups : plan.groupCount;
+  const inRange = groupIndex >= 0 && groupIndex < allowedGroups;
+  return {
+    type: 'text30', finalResult: inRange ? 'OK' : 'BAD', reason: inRange ? 'flat-5 paint frame accepted' : `group ${groupIndex} outside decodable span ${allowedGroups}`,
+    complete: true, marker, markerFrequency: marker.markerFrequency, markerStrength: marker.markerStrength ?? 0, markerDurationSeen: marker.markerDurationSeen ?? 0,
+    markerStart: marker.markerStart, markerEnd: marker.markerEnd, guardGapMs: TEXT30_MARKER_GUARD_MS, rxBodyOffsetMs: offsetMs,
+    groupIndex, pairIndex: groupIndex, groupWidth: plan.groupWidth, indexBits: plan.indexBits, entries,
+    expectedBits, expectedSymbols, collectedSymbols: symbols.length, collectedBits: usableBits.length, symbols, bits: usableBits,
+    groupedBits: usableBits.join('').replace(new RegExp(`(.{${Math.max(1, plan.indexBits)}})`), '$1 ').trim(),
+    uncertain, missing, confidence: average(confidences), startTime,
+    dataTones: expectedSymbols,
+    frameIndex: null
+  };
 }
 
-function scoreAdaptiveToneDecode(decoded, offsetMs, marker) {
+function scoreTextPainterDecode(decoded, offsetMs, marker) {
   if (!decoded.complete) return -999;
   let score = decoded.confidence || 0;
-  score -= decoded.uncertain.length * 0.015;
-  score -= decoded.missing.length * 0.10;
-  if (decoded.checkPassed === true) score += 0.35;
-  if (decoded.checkPassed === false) score -= 0.80;
-  if (decoded.type === 'data') {
-    const knownSlots = microframeRx.meta?.totalSlots ?? null;
-    if (knownSlots === null) {
-      if (decoded.seq >= 0 && decoded.seq < PACKET_RX_MAX_SLOTS_WITHOUT_META) score += 0.04;
-      else score -= 0.60;
-    } else if (decoded.seq >= 0 && decoded.seq < knownSlots) score += 0.12;
-    else score -= 0.60;
-    const slot = microframeRx.slots.get(decoded.seq);
-    if (slot) {
-      const key = decoded.dataBytes.join(',');
-      const sameChoice = slot.choices.get(key);
-      if (sameChoice) score += Math.min(0.35, sameChoice.count * 0.10);
-      else if (slot.choices.size) score -= 0.08;
+  score -= decoded.uncertain.length * 0.02;
+  score -= decoded.missing.length * 0.12;
+  if (decoded.finalResult === 'OK') score += 0.18;
+  else score -= 0.60;
+  const nominal = TEXT30_MARKER_GUARD_MS;
+  score -= Math.abs(offsetMs - nominal) / 2000;
+  if (textPainterRx && decoded.finalResult === 'OK') {
+    for (const entry of decoded.entries || []) {
+      if (entry.kind === 'pad') continue;
+      const slot = textPainterRx.slots[entry.position];
+      const existing = slot?.choices?.get(entry.symbol);
+      if (existing) score += Math.min(0.20, existing.count * 0.06);
+      else if (slot && slot.choices.size) score -= 0.05;
     }
-  } else if (decoded.type === 'meta') {
-    if (decoded.length > 0 && decoded.length < 256 && decoded.totalSlots > 0 && decoded.totalSlots < 128) score += 0.04;
-    else score -= 0.30;
   }
-  const markerDuration = getPacketMarkerDurationMs();
-  const seenDuration = marker.markerDurationSeen ?? markerDuration;
-  const durationCompensated = PACKET_MARKER_GUARD_MS + Math.max(0, markerDuration - seenDuration);
-  score -= Math.abs(offsetMs - durationCompensated) / 2000;
   return score;
 }
 
-function chooseAdaptiveToneDecode(marker, now) {
-  const offsets = packetRxOffsetCandidates(marker);
-  const symbolMs = Number(els.packetSymbol.value);
-  const mode = getPacketFrameMode();
-  const markerPattern = marker.markerPattern || 'unknown';
-  const expectedFrameBytes = markerPattern === 'META' ? (mode === 'checked' ? 6 : 5) : (mode === 'checked' ? 4 : 3);
-  const expectedSymbols = bodySymbolCountForBytes(expectedFrameBytes);
+function chooseTextPainterDecode(marker, now) {
+  const plan = text30EnsurePlan();
+  const symbolMs = getTextPainterSymbolMs();
+  const expectedSymbols = Math.ceil((plan.indexBits + plan.groupWidth * 5) / 2);
+  const offsets = textPainterRxOffsetCandidates(marker);
   const maxOffset = Math.max(...offsets);
   const latestEnd = marker.markerEnd + maxOffset + expectedSymbols * symbolMs;
   if (now < latestEnd) {
-    const partial = decodeToneDelimitedMicroframeAtOffset(marker, PACKET_RX_BODY_OFFSET_MS, now);
-    partial.reason = `waiting for adaptive offset window (${Math.round(latestEnd - now)} ms remaining)`;
+    const partial = decodeTextPainterFrameAtOffset(marker, TEXT30_MARKER_GUARD_MS, now);
+    partial.reason = `waiting for flat-5 offset window (${Math.round(latestEnd - now)} ms remaining)`;
     return partial;
   }
   const candidates = offsets.map(offset => {
-    const decoded = decodeToneDelimitedMicroframeAtOffset(marker, offset, now);
-    return { offset, decoded, score: scoreAdaptiveToneDecode(decoded, offset, marker) };
+    const decoded = decodeTextPainterFrameAtOffset(marker, offset, now);
+    return { offset, decoded, score: scoreTextPainterDecode(decoded, offset, marker) };
   }).filter(candidate => candidate.decoded.complete);
   candidates.sort((a, b) =>
     (b.score - a.score) ||
     ((b.decoded.confidence || 0) - (a.decoded.confidence || 0)) ||
-    (Math.abs(a.offset - PACKET_RX_BODY_OFFSET_MS) - Math.abs(b.offset - PACKET_RX_BODY_OFFSET_MS))
+    (Math.abs(a.offset - TEXT30_MARKER_GUARD_MS) - Math.abs(b.offset - TEXT30_MARKER_GUARD_MS))
   );
-  const best = candidates[0] || decodeToneDelimitedMicroframeAtOffset(marker, PACKET_RX_BODY_OFFSET_MS, now);
-  const decoded = best.decoded || best;
-  if (best.offset !== undefined) {
-    decoded.adaptiveRx = {
-      selectedOffset: best.offset,
-      nominalOffset: PACKET_RX_BODY_OFFSET_MS,
-      score: best.score,
-      top: candidates.slice(0, 4).map(candidate => ({
-        offset: candidate.offset,
-        score: candidate.score,
-        confidence: candidate.decoded.confidence,
-        seq: candidate.decoded.seq ?? null,
-        bytes: candidate.decoded.rawFrameBytes ? [...candidate.decoded.rawFrameBytes] : []
-      }))
-    };
-  }
-  return decoded;
-}
-
-function decodeToneDelimitedMicroframe(marker, now = performance.now()) {
-  if (PACKET_RX_ADAPTIVE_OFFSETS) return chooseAdaptiveToneDecode(marker, now);
-  return decodeToneDelimitedMicroframeAtOffset(marker, PACKET_RX_BODY_OFFSET_MS, now);
-}
-
-function decodeToneDelimitedFrameBytes(bytes, markerPattern, mode = getPacketFrameMode()) {
-  const checked = mode === 'checked';
-  if (markerPattern === 'META') {
-    const needed = checked ? 6 : 5;
-    if (bytes.length < needed) return { type: 'meta', finalResult: 'PARTIAL', reason: 'META/EOF fields still collecting' };
-    const [messageId, length, totalSlots, crcLo, crcHi] = bytes.slice(0, 5);
-    const crc = crcLo | (crcHi << 8);
-    const expectedCheck = (messageId ^ length ^ totalSlots ^ crcLo ^ crcHi) & 0xff;
-    const receivedCheck = checked ? bytes[5] : null;
-    const checkPassed = !checked || receivedCheck === expectedCheck;
-    return { type: 'meta', messageId, length, totalSlots, crc, expectedCheck, receivedCheck, checkPassed, finalResult: checkPassed ? 'OK' : 'BAD', reason: checkPassed ? 'META/EOF accepted from tone marker' : 'META/EOF check byte failed' };
-  }
-  const needed = checked ? 4 : 3;
-  if (bytes.length < needed) return { type: 'data', finalResult: 'PARTIAL', reason: 'data microframe fields still collecting' };
-  const [seq, byte0, byte1] = bytes.slice(0, 3);
-  const expectedCheck = (seq ^ byte0 ^ byte1) & 0xff;
-  const receivedCheck = checked ? bytes[3] : null;
-  const checkPassed = !checked || receivedCheck === expectedCheck;
-  return { type: 'data', seq, dataBytes: [byte0, byte1], expectedCheck, receivedCheck, checkPassed, finalResult: checkPassed ? 'OK' : 'BAD', reason: checkPassed ? 'microframe observation accepted from tone marker' : 'per-frame check byte failed' };
-}
-
-function decorateToneDelimitedDecoded(decoded, details) {
-  const { bits, rawFrameBytes, uncertain, missing, confidences, marker, expectedFrameBytes, expectedSymbols, startTime, offsetMs, mode } = details;
-  const expectedBits = expectedSymbols ?? bodySymbolCountForBytes(expectedFrameBytes);
-  const groupSize = PACKET_BODY_MODE === 'quad' ? 4 : 8;
-  return {
-    ...decoded,
-    bits,
-    groupedBits: bits.map((bit, index) => missing.includes(index + 1) ? '·' : uncertain.includes(index + 1) ? '?' : String(bit)).join('').replace(new RegExp(`(.{${groupSize}})`, 'g'), '$1 ').trim(),
-    preambleFound: false,
-    preambleMatches: 0,
-    preambleBits: 0,
-    syncStatus: 'tone marker',
-    syncByte: null,
-    marker,
-    markerFrequency: marker.markerFrequency,
-    markerStrength: marker.markerStrength ?? 0,
-    markerDurationSeen: marker.markerDurationSeen ?? 0,
-    markerPattern: marker.markerPattern || 'unknown',
-    markerStart: marker.markerStart,
-    markerEnd: marker.markerEnd,
-    guardGapMs: PACKET_MARKER_GUARD_MS,
-    rxBodyOffsetMs: offsetMs ?? PACKET_RX_BODY_OFFSET_MS,
-    bodyStart: startTime,
-    rawFrameBytes,
-    expectedBits,
-    collectedBits: bits.length,
-    frameBytesCollected: rawFrameBytes.length,
-    expectedFrameBytes,
-    coverage: bits.length / Math.max(1, expectedBits),
-    confidence: average(confidences),
-    uncertain,
-    missing,
-    complete: rawFrameBytes.length >= expectedFrameBytes,
-    checkStatus: decoded.checkPassed === undefined ? 'not used' : decoded.checkPassed ? 'OK' : 'BAD',
-    mode,
-    delimiterMode: 'tone'
+  const best = candidates[0] || { offset: TEXT30_MARKER_GUARD_MS, decoded: decodeTextPainterFrameAtOffset(marker, TEXT30_MARKER_GUARD_MS, now), score: -999 };
+  best.decoded.adaptiveRx = {
+    selectedOffset: best.offset,
+    nominalOffset: TEXT30_MARKER_GUARD_MS,
+    score: best.score,
+    top: candidates.slice(0, 4).map(candidate => ({ offset: candidate.offset, score: candidate.score, confidence: candidate.decoded.confidence, groupIndex: candidate.decoded.groupIndex ?? null }))
   };
+  return best.decoded;
 }
 
-function packetPreambleProgress(now) {
-  const symbolMs = Number(els.packetSymbol.value);
-  const mark = Number(els.packetMark.value);
-  const space = Number(els.packetSpace.value);
-  const lookbackStart = Math.max(packetRxArmTime, now - Math.max(9000, symbolMs * 34 + 1200));
-  const first = traceBuffer.find(s => s.timestamp >= lookbackStart)?.timestamp;
-  const fallback = {
-    start: null, matches: 0, needed: Math.ceil(PACKET_PREAMBLE_BITS.length * 0.75),
-    averageConfidence: 0, carrierConfidence: 0, currentPeak, currentStrength,
-    state: packetRxState, reason: 'no recent detector samples in packet lookback window'
-  };
-  if (!first) return fallback;
-  let best = { ...fallback, reason: 'alternating preamble not matched yet' };
-  for (let start = first; start <= now - PACKET_PREAMBLE_BITS.length * symbolMs; start += symbolMs / 2) {
-    let matches = 0;
-    let confidenceSum = 0;
-    const warmupStart = Math.max(lookbackStart, start - 1200);
-    const warmupSamples = traceBuffer.filter(s => s.timestamp >= warmupStart && s.timestamp < start);
-    const carrierConfidence = warmupSamples.length
-      ? warmupSamples.reduce((sum, sample) => sum + Math.min(1, ((sample.meta?.energyMap?.[space]) || 0) / STRONG_ENERGY), 0) / warmupSamples.length
-      : 0;
-    for (let i = 0; i < PACKET_PREAMBLE_BITS.length; i++) {
-      const guard = symbolGuardMs(symbolMs);
-      const classified = classifySymbolWindow(start + i * symbolMs + guard, start + (i + 1) * symbolMs - guard, mark, space);
-      if (classified.missing) continue;
-      if (classified.bit === PACKET_PREAMBLE_BITS[i] && classified.confidence > 0.06) matches++;
-      confidenceSum += classified.confidence;
-    }
-    const averageConfidence = confidenceSum / PACKET_PREAMBLE_BITS.length;
-    if (matches > best.matches || (matches === best.matches && averageConfidence + carrierConfidence > best.averageConfidence + best.carrierConfidence)) {
-      best = {
-        start, matches, needed: fallback.needed, averageConfidence, carrierConfidence,
-        currentPeak, currentStrength,
-        state: carrierConfidence > 0.18 ? 'carrier seen' : matches ? 'alternating pattern partially matched' : 'waiting for preamble',
-        reason: matches >= fallback.needed && averageConfidence > 0.08 ? 'preamble detected' : `need ${fallback.needed} alternating matches and >8% confidence`
-      };
-    }
-    if (matches >= fallback.needed && averageConfidence > 0.08) return { ...best, state: 'preamble detected', reason: 'timing locked' };
-  }
-  return best;
+function text30ApplyDecodedFrame(decoded) {
+  if (!textPainterRx || decoded.finalResult !== 'OK') return null;
+  text30ApplyFrame(decoded, textPainterRx);
+  textPainterLiveStats.accepted += 1;
+  textPainterLiveStats.observations += decoded.entries.filter(entry => entry.kind !== 'pad').length;
+  textPainterLiveStats.lastGroupIndex = decoded.groupIndex;
+  textPainterLiveStats.lastReason = decoded.reason;
+  renderTextPainterAssembly();
+  return { observation: 'text30_frame', groupIndex: decoded.groupIndex };
 }
 
-function findPacketPreamble(now) {
-  const progress = packetPreambleProgress(now);
-  return progress.state === 'preamble detected' ? progress.start : null;
+function textPainterVisibleText() {
+  if (!textPainterRx) return '';
+  return textPainterRx.slots.map(slot => {
+    const best = text30BestSlot(slot);
+    return best ? best.char : '_';
+  }).join('');
 }
 
-function updatePacketWaiting(now) {
-  if (now - packetRxProgressLast < 500) return;
-  packetRxProgressLast = now;
-  const mark = Number(els.packetMark.value);
-  const space = Number(els.packetSpace.value);
-  const progress = packetPreambleProgress(now);
-  packetRxState = progress.state.replace('preamble', 'candidate lock');
-  updatePacketControlLabels();
-  setPacketLiveStatus(`Microframe RX armed
-RX mode: ${isListening ? 'listening' : 'not listening'} → ${packetRxState}
-Expected candidate-lock frequencies: mark ${formatFreq(mark)}, space ${formatFreq(space)}
-Frame mode: ${getPacketFrameMode()}
-Current detected peak: ${formatFreq(progress.currentPeak)}
-Carrier confidence: ${percent(progress.carrierConfidence)}
-Alternating candidate progress: ${progress.matches}/${PACKET_PREAMBLE_BITS.length} symbols matched (need ${progress.needed})
-Candidate-lock confidence: ${percent(progress.averageConfidence)}
-Why not locked: ${progress.reason}
-Partial assembly remains visible while waiting; one bad frame does not reset slots.`);
+function updateTextPainterLiveWaiting(now, progress = {}) {
+  if (now - textPainterRxProgressLast < 500) return;
+  textPainterRxProgressLast = now;
+  textPainterRxState = progress.state || 'watching marker tone';
+  updateTextPainterRxButton();
+  updateTextPainterDashboard();
+  text30SetLiveStatus(`RX ${isListening ? 'listening' : 'not listening'} · ${textPainterRxState} · marker ${percent(progress.markerStrength || 0)} · peak ${currentPeak ? `${formatFreq(currentPeak)} ${percent(currentStrength)}` : '--'}`);
 }
 
-function scanPackets(now) {
-  if (getPacketMarkerMode() === 'legacy') {
-    scanLegacyPreamblePackets(now);
-    return;
-  }
-  scanToneDelimitedPackets(now);
-}
-
-function scanToneDelimitedPackets(now) {
-  if (now < packetSeenUntil) return;
-  const marker = findToneMarkerCandidate(now);
+function scanTextPainterRx(now) {
+  if (now < textPainterSeenUntil) return;
+  const marker = findTextPainterMarkerCandidate(now);
   if (!marker.accepted) {
-    updateToneMarkerWaiting(now, marker);
+    updateTextPainterLiveWaiting(now, marker);
     return;
   }
-  packetRxState = marker.markerPattern === 'META' ? 'decoding META/EOF body' : 'decoding DATA body';
-  updatePacketControlLabels();
-  const decoded = decodeToneDelimitedMicroframe(marker, now);
+  textPainterLiveStats.markers += 1;
+  textPainterRxState = 'decoding flat-5 paint frame';
+  updateTextPainterRxButton();
+  const decoded = chooseTextPainterDecode(marker, now);
   if (!decoded.complete) {
-    updateToneMarkerWaiting(now, { ...marker, state: packetRxState, reason: decoded.reason, decoded });
+    textPainterLiveStats.partial += 1;
+    updateTextPainterLiveWaiting(now, { ...marker, state: textPainterRxState, reason: decoded.reason, decoded });
     return;
   }
-  packetLastMarkerStart = marker.markerStart;
-  packetSeenUntil = marker.markerEnd + (decoded.rxBodyOffsetMs ?? PACKET_RX_BODY_OFFSET_MS) + decoded.expectedBits * Number(els.packetSymbol.value) + Number(els.packetSymbol.value) * 0.75;
-  packetRxArmTime = Math.max(packetRxArmTime, marker.markerEnd);
-  if (decoded.finalResult === 'OK') observeMicroframe(decoded, now);
-  const record = addPacketLogRecord(decoded, now);
-  const status = decoded.finalResult;
-  const seqLine = decoded.type === 'data' ? `Seq ${decoded.seq}, bytes ${decoded.dataBytes.map(byte => `0x${byte.toString(16).padStart(2, '0')}`).join(' ')} (${decoded.dataBytes.map(byte => sanitizeByteForDisplay(byte)).join('')})` : decoded.type === 'meta' ? `META/EOF length ${decoded.length}, slots ${decoded.totalSlots}, CRC 0x${decoded.crc.toString(16).padStart(4, '0')}` : 'No trusted marker yet';
-  setPacketLiveStatus(`${record.label}: ${record.kind}
-Marker: ${formatFreq(decoded.markerFrequency)} ${decoded.markerPattern}, strength ${percent(decoded.markerStrength)}, guard ${decoded.guardGapMs} ms
-${seqLine}
-Per-frame check: ${record.perFrameCheck}
-Reason: ${record.reason}
-Assembly: ${microframeRx.lastStateLine}`);
-  log(status === 'OK' ? 'OK' : 'WARN', `tone-delimited microframe RX ${record.kind}: ${decoded.reason}`);
-}
-
-function scanLegacyPreamblePackets(now) {
-  if (now < packetSeenUntil) return;
-  const start = findPacketPreamble(now);
-  if (!start) { updatePacketWaiting(now); return; }
-  packetRxState = 'receiving microframe';
-  updatePacketControlLabels();
-  const decoded = decodeMicroframeFrom(start, now);
-  if (!decoded.complete && decoded.collectedBits < PACKET_PREAMBLE_BITS.length + 8) { updatePacketWaiting(now); return; }
-  packetSeenUntil = now + Number(els.packetSymbol.value) * 3;
-  packetRxArmTime = packetSeenUntil;
-  if (decoded.finalResult === 'OK') observeMicroframe(decoded, now);
-  const record = addPacketLogRecord(decoded, now);
-  const status = decoded.finalResult;
-  const seqLine = decoded.type === 'data' ? `Seq ${decoded.seq}, bytes ${decoded.dataBytes.map(byte => `0x${byte.toString(16).padStart(2, '0')}`).join(' ')} (${decoded.dataBytes.map(byte => sanitizeByteForDisplay(byte)).join('')})` : decoded.type === 'meta' ? `META/EOF length ${decoded.length}, slots ${decoded.totalSlots}, CRC 0x${decoded.crc.toString(16).padStart(4, '0')}` : 'No trusted marker yet';
-  setPacketLiveStatus(`${record.label}: ${record.kind}
-${seqLine}
-Per-frame check: ${record.perFrameCheck}
-Reason: ${record.reason}
-Assembly: ${microframeRx.lastStateLine}`);
-  log(status === 'OK' ? 'OK' : status === 'BAD' ? 'WARN' : status === 'NO LOCK' ? 'WARN' : 'WARN', `microframe RX ${record.kind}: ${decoded.reason}`);
-}
-
-function updateToneMarkerWaiting(now, progress = {}) {
-  if (now - packetRxProgressLast < 500) return;
-  packetRxProgressLast = now;
-  const mark = Number(els.packetMark.value);
-  const space = Number(els.packetSpace.value);
-  packetRxState = progress.state || 'watching marker tone';
-  updatePacketControlLabels();
-  setPacketLiveStatus(`Tone-delimited Microframe RX armed
-RX mode: ${isListening ? 'listening' : 'not listening'} → ${packetRxState}
-Frame marker: ${formatFreq(getPacketMarkerFreq())}, strength ${percent(progress.markerStrength || 0)}, pattern ${progress.markerPattern || 'none'}
-Data frequencies: mark ${formatFreq(mark)}, space ${formatFreq(space)}
-Frame mode: ${getPacketFrameMode()}
-Marker guard gap: ${PACKET_MARKER_GUARD_MS} ms
-Current detected peak: ${formatFreq(currentPeak)}
-Why not decoding: ${progress.reason || 'waiting for a complete marker event'}
-Partial assembly remains visible while waiting; bad/missed markers do not reset slots.`);
-}
-
-function runPacketSelfTest() {
-  resetMicroframeAssembly();
-  const mode = getPacketFrameMode();
-  const plan = buildMicroframeCarouselFrames('HELLO WORLD');
-  const cases = [];
-  for (const frame of plan.frames) {
-    const bytes = buildMicroframeBytes(frame, mode);
-    cases.push([frame.type === 'meta' ? 'META/EOF' : `seq ${frame.seq}`, bytes, 'OK']);
+  textPainterLastMarkerStart = marker.markerStart;
+  textPainterSeenUntil = marker.markerEnd + (decoded.rxBodyOffsetMs ?? TEXT30_MARKER_GUARD_MS) + decoded.expectedSymbols * getTextPainterSymbolMs() + getTextPainterSymbolMs() * 0.75;
+  textPainterRxArmTime = Math.max(textPainterRxArmTime, marker.markerEnd);
+  if (decoded.finalResult === 'OK') {
+    text30ApplyDecodedFrame(decoded);
+  } else {
+    textPainterLiveStats.rejected += 1;
+    textPainterLiveStats.lastReason = decoded.reason;
   }
-  if (mode === 'checked') {
-    const bad = buildMicroframeBytes(plan.frames[0], mode);
-    bad[bad.length - 1] ^= 0xff;
-    cases.push(['bad checked frame', bad, 'BAD']);
+  const entries = decoded.entries ? decoded.entries.filter(entry => entry.kind !== 'pad').map(entry => `${entry.position}:${entry.symbol}`).join(' ') : '(none)';
+  const offset = decoded.adaptiveRx ? Math.round(decoded.adaptiveRx.selectedOffset) : Math.round(decoded.rxBodyOffsetMs ?? TEXT30_MARKER_GUARD_MS);
+  text30SetLiveStatus(`${decoded.finalResult} · group ${decoded.groupIndex ?? '--'} · marker ${percent(decoded.markerStrength)} · confidence ${percent(decoded.confidence)} · data ${decoded.collectedSymbols}/${decoded.expectedSymbols}`);
+  updateTextPainterDashboard();
+}
+
+function resetTextPainterLiveRxState({ resetAssembly = true } = {}) {
+  textPainterRxState = 'watching marker tone';
+  textPainterSeenUntil = 0;
+  textPainterRxArmTime = performance.now();
+  textPainterRxProgressLast = 0;
+  textPainterLastMarkerStart = 0;
+  textPainterLiveStats = makeEmptyTextPainterLiveStats();
+  textPainterLiveStats.startedAt = textPainterRxArmTime;
+  if (resetAssembly) {
+    textPainterPlan = text30PlanMessage();
+    textPainterRx = text30MakeEmptyRx(textPainterRxBlindMode ? 0 : textPainterPlan.text.length);
+    textPainterFrameCursor = 0;
+    renderTextPainterPlan();
+    renderTextPainterAssembly();
   }
-  const lines = cases.map(([name, bytes, expected]) => {
-    const decoded = decodeMicroframeBytes(bytes, mode);
-    if (decoded.finalResult === 'OK') observeMicroframe({ ...decoded, preambleFound: true, preambleMatches: PACKET_PREAMBLE_BITS.length, preambleBits: PACKET_PREAMBLE_BITS.length, collectedBits: bytes.length * 8, expectedBits: bytes.length * 8, coverage: 1, confidence: 1, uncertain: [], missing: [], bits: [], rawFrameBytes: bytes, syncStatus: 'found', mode }, performance.now());
-    const pass = decoded.finalResult === expected;
-    return `${pass ? 'PASS' : 'FAIL'} ${name}: expected ${expected}, got ${decoded.finalResult} — ${decoded.reason}`;
-  });
-  els.packetOut.textContent = `Microframe self-test (no audio)\n${lines.join('\n')}\n\nAssembly: ${microframeRx.lastAssembledText} ${microframeRx.finalCrcOk ? '✅' : ''}\n${microframeRx.lastStateLine}`;
-  log(lines.every(line => line.startsWith('PASS')) ? 'OK' : 'BAD', 'microframe no-audio self-test complete');
+  updateTextPainterRxButton();
 }
 
-function byteLength(text) {
-  return new TextEncoder().encode(text).length;
-}
-
-function setPacketExportStatus(message, tone = 'ready') {
-  const prefix = tone === 'error' ? 'export error' : tone === 'copied' ? 'copied' : 'export ready';
-  els.packetExportStatus.textContent = `${prefix}: ${message}`;
-}
-
-function exportPacketLogs() {
-  const humanReadable = els.packetOut.textContent;
-  const logText = `${humanReadable}\nassembly=${microframeRx.lastAssembledText || '(none)'} status="${microframeRx.lastStateLine}"`;
-  const bytes = byteLength(logText);
-  const filename = `microframe-rx-log-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
-  els.packetExportJson.value = logText;
-  els.packetExportJson.hidden = false;
-  els.packetCopyJson.disabled = false;
-  setPacketExportStatus(`${bytes} bytes`);
-
-  try {
-    const blob = new Blob([logText], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 0);
-    log('OK', `export ready: ${bytes} bytes from microframe log`);
-  } catch (error) {
-    log('WARN', `log file download failed; copy log remains available: ${error.message}`);
-  }
-}
-
-async function copyPacketExportJson() {
-  const logText = els.packetExportJson.value;
-  if (!logText) {
-    setPacketExportStatus('press Export Logs first', 'error');
-    return;
-  }
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(logText);
-    } else {
-      els.packetExportJson.focus();
-      els.packetExportJson.select();
-      document.execCommand('copy');
+async function toggleTextPainterLiveRx() {
+  if (textPainterRxActive) {
+    textPainterRxActive = false;
+    textPainterRxBlindMode = false;
+    textPainterRxState = 'idle';
+    updateTextPainterRxButton();
+    text30SetLiveStatus('RX stopped; assembled text left visible.');
+    log('WARN', 'flat-5 text-painter receiver stopped');
+    if (textPainterRxStartedMic) {
+      stopListening();
+      textPainterRxStartedMic = false;
+      text30SetLiveStatus('RX stopped; microphone released.');
     }
-    setPacketExportStatus(`${byteLength(logText)} bytes copied`, 'copied');
-    log('OK', 'copied exported packet log to clipboard');
-  } catch (error) {
-    els.packetExportJson.focus();
-    els.packetExportJson.select();
-    setPacketExportStatus('copy failed; log is selected for manual copy', 'error');
-    log('BAD', `copy log failed: ${error.message}`);
+    return;
   }
+  textPainterRxStartedMic = false;
+  if (!isListening) {
+    try {
+      await startListening();
+      textPainterRxStartedMic = true;
+    }
+    catch (error) { log('BAD', `microphone unavailable: ${error.message}`); return; }
+  }
+  textPainterRxActive = true;
+  textPainterRxBlindMode = true;
+  resetTextPainterLiveRxState({ resetAssembly: true });
+  text30SetLiveStatus(`RX armed; watching marker tone.`);
+  log('OK', 'flat-5 text-painter receiver armed blind/dynamic with fresh assembly state');
 }
+
 
 function animationLoop() {
   drawTrace();
   updateActivityBars();
+  updateTextPainterSignalMeters();
   updateStatus();
   requestAnimationFrame(animationLoop);
 }
@@ -2808,73 +2061,46 @@ function attachEvents() {
   els.symbolLength.addEventListener('change', updateSliderLabels);
   els.playTone.addEventListener('click', () => playTone(selectedTone, Number(els.duration.value)));
   els.playSweep.addEventListener('click', () => playSequence(TONES.map(freq => ({ name: `${freq / 1000} kHz sweep tone`, tones: [freq], duration: 300, gap: SYNC_GAP_MS })), TX_STATES.SWEEP, 'sweep'));
-  els.playPattern.addEventListener('click', () => {
-    const symbolMs = getSelectedSymbolMs();
-    playSequence([{ name: `16/18 kHz pattern, ${symbolMs} ms`, tones: [16000, 18000, 16000, 18000, 16000, 18000], duration: symbolMs, gap: SYNC_GAP_MS }], TX_STATES.PATTERN, 'pattern');
-  });
-  els.syncTx.addEventListener('click', () => playSequence(getSyncTxSequence(), TX_STATES.SYNC, 'sync TX'));
   els.listen.addEventListener('click', async () => {
-    if (isListening) stopListening();
-    else {
+    if (isListening) {
+      stopListening();
+      textPainterRxStartedMic = false;
+      if (textPainterRxActive) {
+        textPainterRxActive = false;
+        textPainterRxBlindMode = false;
+        textPainterRxState = 'idle';
+        updateTextPainterRxButton();
+        text30SetLiveStatus('RX stopped; microphone released.');
+      }
+    } else {
       try { await startListening(); }
       catch (error) { log('BAD', `microphone unavailable: ${error.message}`); }
     }
-  });
-  els.syncRx.addEventListener('click', async () => {
-    if (!isListening) {
-      try { await startListening(); }
-      catch (error) { log('BAD', `microphone unavailable: ${error.message}`); return; }
-    }
-    syncRxActive = true;
-    syncRxState = 'waiting for sync';
-    syncArmTime = performance.now();
-    syncStartTime = 0;
-    syncResults = [];
-    modeLabel = 'waiting for sync';
-    renderResults();
-    log('OK', 'sync receiver armed; waiting for preamble');
   });
   els.resetActivity.addEventListener('click', () => {
     activity = new Map(BIN_FREQS.map(freq => [freq, 0]));
     log('OK', 'activity history reset');
   });
-  els.packetMark.addEventListener('change', () => { packetFreqTouched = true; });
-  els.packetSpace.addEventListener('change', () => { packetFreqTouched = true; });
-  els.packetMarkerFreq.addEventListener('change', () => { packetFreqTouched = true; resetPacketRxParser(); log('OK', `frame marker frequency set to ${formatFreq(getPacketMarkerFreq())}`); });
-  els.packetMarkerDuration.addEventListener('change', () => { log('OK', `frame marker duration set to ${getPacketMarkerDurationMs()} ms`); });
-  els.packetMarkerMode.addEventListener('change', () => { resetPacketRxParser({ clearLog: packetRxActive }); log('OK', `microframe marker mode set to ${getPacketMarkerMode()}`); updatePacketControlLabels(); });
-  els.packetFrameMode.addEventListener('change', () => { resetMicroframeAssembly(); log('OK', `microframe frame mode set to ${getPacketFrameMode()}`); });
-  els.packetText.addEventListener('input', () => { microframeMessageId = (microframeMessageId + 1) & 0xff; });
-  els.sendPacket.addEventListener('click', () => sendPacketOnce());
-  els.startPacketLoop.addEventListener('click', () => runPacketLoop());
-  els.stopPacketLoop.addEventListener('click', () => {
-    resetPacketLoopState({ stopAudio: true });
-    log('OK', 'microframe carousel stopped; TX sequence reset to seq 0');
+  els.packetMarkerFreq?.addEventListener('change', () => { log('OK', `marker tone set to ${formatFreq(getPacketMarkerFreq())}`); renderTextPainterPlan(); });
+  els.packetMarkerDuration?.addEventListener('change', () => { log('OK', `marker duration set to ${getPacketMarkerDurationMs()} ms`); renderTextPainterPlan(); });
+  els.textPainterPlan?.addEventListener('click', rebuildTextPainterPlan);
+  els.textPainterText.addEventListener('input', rebuildTextPainterPlan);
+  els.textPainterSymbol.addEventListener('change', renderTextPainterPlan);
+  els.textPainterBurstCap.addEventListener('change', rebuildTextPainterPlan);
+  els.textPainterNext?.addEventListener('click', text30SimNextFrame);
+  els.textPainterOnePass?.addEventListener('click', () => text30SimPass(1));
+  els.textPainterThreePasses?.addEventListener('click', () => text30SimPass(3));
+  els.textPainterReset.addEventListener('click', text30ResetPaint);
+  els.textPainterSendOnce?.addEventListener('click', () => playTextPainterOnePass('text painter one-pass TX'));
+  els.textPainterPlay.addEventListener('click', playTextPainterPlan);
+  els.textPainterRx.addEventListener('click', toggleTextPainterLiveRx);
+  els.toneSignalStrip?.addEventListener('click', () => {
+    textPainterMetersEnabled = !textPainterMetersEnabled;
+    els.toneSignalStrip.classList.toggle('meter-off', !textPainterMetersEnabled);
+    els.toneSignalStrip.title = textPainterMetersEnabled ? 'Tone meters on. Tap to mute Star Trek mode.' : 'Tone meters off. Tap to show live tone meters.';
+    updateTextPainterDashboard();
   });
-  els.packetSelfTest.addEventListener('click', runPacketSelfTest);
-  els.packetExportLogs.addEventListener('click', exportPacketLogs);
-  els.packetCopyJson.addEventListener('click', copyPacketExportJson);
-  els.packetRx.addEventListener('click', async () => {
-    if (packetRxActive) {
-      packetRxActive = false;
-      packetRxState = 'idle';
-      els.packetRx.classList.remove('active');
-      updatePacketControlLabels();
-      log('WARN', 'microframe receiver stopped; microframe log left visible');
-      return;
-    }
-    if (!isListening) {
-      try { await startListening(); }
-      catch (error) { log('BAD', `microphone unavailable: ${error.message}`); return; }
-    }
-    applyBestPacketDefaults();
-    packetRxActive = true;
-    els.packetRx.classList.add('active');
-    resetPacketRxParser({ clearLog: true });
-    setPacketLiveStatus(`Microframe RX armed; assembly fresh and watching for ${formatFreq(getPacketMarkerFreq())} tone-delimited frame markers. Trace/activity continue updating.`);
-    updatePacketControlLabels();
-    log('OK', 'microframe receiver armed with fresh assembly state');
-  });
+  if (els.toneSignalStrip) els.toneSignalStrip.title = 'Tone meters on. Tap to mute Star Trek mode.';
   els.liveBtn.addEventListener('click', () => { liveMode = true; viewOffsetMs = 0; });
   els.traceShell.addEventListener('pointerdown', event => {
     drag = { x: event.clientX, offset: viewOffsetMs };
@@ -2895,8 +2121,9 @@ buildControls();
 updatePacketControlLabels();
 setupCloseablePanels();
 updateSliderLabels();
-renderResults();
+rebuildTextPainterPlan();
 attachEvents();
+window.addEventListener('pagehide', () => { if (isListening) stopListening(); });
 setInterval(detect, DETECT_INTERVAL_MS);
 animationLoop();
 
